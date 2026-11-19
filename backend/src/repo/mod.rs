@@ -332,6 +332,19 @@ impl Store {
     }
 }
 
+pub fn normalize_requested_companies(requested: Option<&[String]>) -> Option<Vec<String>> {
+    let cleaned: Vec<String> = requested?
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 pub fn parse_seed_bundle(seed: &Value) -> Result<(BootstrapDatos, FrontendEstadoApp), ApiError> {
     let datos_val = seed
         .get("datos")

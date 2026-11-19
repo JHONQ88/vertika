@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { apiEnabled, type UserRole } from '../api';
-import { acciones, DEMO_PERFILES, useAuth } from '../store';
+import { acciones, DATOS, DEMO_PERFILES, useAuth } from '../store';
 import type { ToastData } from '../ui-types';
 import { Badge, Btn, Modal } from './ui';
 
@@ -33,6 +33,7 @@ export function AuthModal({
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoPassword, setNuevoPassword] = useState('');
   const [nuevoRol, setNuevoRol] = useState<UserRole>('ADMINISTRADOR');
+  const [alcanceEmpresa, setAlcanceEmpresa] = useState<string>('ALL');
 
   const puedeCrearUsuarios = user.rol === 'CONTADOR' || user.rol === 'ADMINISTRADOR';
 
@@ -95,12 +96,14 @@ export function AuthModal({
         nombre: nuevoNombre,
         password: nuevoPassword,
         rol: nuevoRol,
+        companyIds: alcanceEmpresa === 'ALL' ? undefined : [alcanceEmpresa],
       });
       if (res.ok) {
         toast({ tone: 'ok', title: 'Usuario creado', msg: res.detalle });
         setNuevoEmail('');
         setNuevoNombre('');
         setNuevoPassword('');
+        setAlcanceEmpresa('ALL');
         setPanelExtra('none');
       } else {
         toast({ tone: 'error', title: 'No se pudo crear el usuario', msg: res.error });
@@ -317,6 +320,21 @@ export function AuthModal({
                 {ROLES_DISPONIBLES.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="campo">
+              <small>Copropiedades permitidas</small>
+              <select
+                value={alcanceEmpresa}
+                onChange={(e) => setAlcanceEmpresa(e.target.value)}
+                style={{ width: '100%', marginTop: 4 }}
+              >
+                <option value="ALL">Todas las copropiedades</option>
+                {DATOS.companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    Solo {c.nombreCorto} ({c.id})
                   </option>
                 ))}
               </select>

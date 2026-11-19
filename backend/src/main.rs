@@ -6,8 +6,10 @@ mod repo;
 
 use auth::{ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, Role};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request as AxumRequest, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, patch, post, put},
     Json, Router,
 };
@@ -31,6 +33,7 @@ struct AppState {
     store: Store,
     auth_required: bool,
     seed_demo: bool,
+    login_limiter: auth::LoginRateLimiter,
 }
 
 impl AppState {
@@ -43,6 +46,13 @@ impl AppState {
         let seed_demo = !std::env::var("SEED_DEMO")
             .ok()
             .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"));
+        auth::validate_production_secret(
+            auth_required,
+            seed_demo,
+            std::env::var("AUTH_SECRET").ok().as_deref(),
+        )
+        .expect("Configuración AUTH_SECRET insegura para producción");
+
         let database_url = std::env::var("DATABASE_URL").ok();
         let store = match database_url {
             Some(url) if !url.trim().is_empty() => match Db::connect(&url).await {
@@ -67,6 +77,7 @@ impl AppState {
             store,
             auth_required,
             seed_demo,
+            login_limiter: auth::LoginRateLimiter::new(),
         }
     }
 
@@ -88,8 +99,25 @@ impl AppState {
             store: Store::Memory(MemoryRepo::new(seed).expect("seed válido")),
             auth_required,
             seed_demo,
+            login_limiter: auth::LoginRateLimiter::new(),
         }
     }
+}
+
+async fn security_headers_middleware(req: AxumRequest, next: Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
 }
 
 fn build_cors_layer() -> CorsLayer {
@@ -185,6 +213,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             patch(update_company_settings),
         )
         .with_state(state)
+        .layer(middleware::from_fn(security_headers_middleware))
         .layer(build_cors_layer())
 }
 
@@ -232,11 +261,67 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     })
 }
 
+fn filter_array_by_company(obj: &mut serde_json::Map<String, Value>, key: &str, field: &str, allowed: &[String], keep_global: bool) {
+    if let Some(Value::Array(items)) = obj.get_mut(key) {
+        items.retain(|item| match item.get(field).and_then(|v| v.as_str()) {
+            Some(cid) => allowed.iter().any(|a| a == cid),
+            None => keep_global,
+        });
+    }
+}
+
+fn filter_estado_by_companies(val: &mut Value, allowed: &[String]) {
+    let Some(obj) = val.as_object_mut() else {
+        return;
+    };
+    filter_array_by_company(obj, "preAsientos", "empresaId", allowed, false);
+    filter_array_by_company(obj, "comprobantes", "empresaId", allowed, false);
+    filter_array_by_company(obj, "auditoria", "empresaId", allowed, false);
+    if let Some(Value::Object(closed)) = obj.get_mut("periodosCerrados") {
+        closed.retain(|k, _| allowed.iter().any(|a| a == k));
+    }
+    if let Some(first) = allowed.first() {
+        let active_allowed = obj
+            .get("activeCompanyId")
+            .and_then(|v| v.as_str())
+            .is_some_and(|cid| allowed.iter().any(|a| a == cid));
+        if !active_allowed {
+            obj.insert("activeCompanyId".into(), Value::String(first.clone()));
+        }
+    }
+}
+
+fn filter_bootstrap_by_companies(val: &mut Value, allowed: &[String]) {
+    if let Some(datos) = val.get_mut("datos").and_then(|v| v.as_object_mut()) {
+        filter_array_by_company(datos, "companies", "id", allowed, false);
+        filter_array_by_company(datos, "units", "empresaId", allowed, false);
+        filter_array_by_company(datos, "terceros", "empresaId", allowed, true);
+        filter_array_by_company(datos, "rubros", "empresaId", allowed, false);
+        filter_array_by_company(datos, "comprobantes", "empresaId", allowed, false);
+        filter_array_by_company(datos, "preAsientos", "empresaId", allowed, false);
+    }
+    if let Some(estado) = val.get_mut("estado") {
+        filter_estado_by_companies(estado, allowed);
+    }
+}
+
 async fn auth_login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let user = state.store.authenticate(&req.email, &req.password).await?;
+    let rate_key = auth::login_rate_key(&headers, &req.email);
+    state.login_limiter.check(&rate_key)?;
+    let user = match state.store.authenticate(&req.email, &req.password).await {
+        Ok(u) => {
+            state.login_limiter.clear(&rate_key);
+            u
+        }
+        Err(e) => {
+            state.login_limiter.record_failure(&rate_key);
+            return Err(e);
+        }
+    };
     let token = auth::issue_token(&user)?;
     Ok(Json(LoginResponse { token, user }))
 }
@@ -274,16 +359,22 @@ async fn bootstrap(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
-    Ok(Json(state.store.bootstrap().await?))
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    let mut bundle = state.store.bootstrap().await?;
+    let allowed = ctx.allowed_company_ids();
+    filter_bootstrap_by_companies(&mut bundle, &allowed);
+    Ok(Json(bundle))
 }
 
 async fn get_state(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
-    Ok(Json(state.store.get_state().await?))
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    let mut payload = state.store.get_state().await?;
+    let allowed = ctx.allowed_company_ids();
+    filter_estado_by_companies(&mut payload, &allowed);
+    Ok(Json(payload))
 }
 
 async fn put_state(
@@ -315,14 +406,20 @@ async fn puc_catalog(
     headers: HeaderMap,
     Query(q): Query<CompanyQuery>,
 ) -> Result<Json<Vec<LedgerAccount>>, ApiError> {
-    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    if let Some(cid) = q.company_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        ctx.require_company_access(cid)?;
+    }
     Ok(Json(state.store.list_puc(q.company_id.as_deref()).await?))
 }
 
 async fn validate_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(draft): Json<EntryDraft>,
 ) -> Result<(StatusCode, Json<ValidationResult>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_access(&draft.company_id)?;
     let puc = state.store.list_puc(Some(&draft.company_id)).await?;
     let result = ledger::validate_entry(&draft, &puc);
     let status = if result.ok {
@@ -335,8 +432,11 @@ async fn validate_entry(
 
 async fn preview_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(draft): Json<EntryDraft>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_access(&draft.company_id)?;
     let puc = state.store.list_puc(Some(&draft.company_id)).await?;
     let result = ledger::validate_entry(&draft, &puc);
     let status = if result.ok {
@@ -356,8 +456,11 @@ async fn preview_entry(
 
 async fn carry_forward(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(pre): Json<PreEntryDraft>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_access(&pre.company_id)?;
     let tps = state
         .store
         .list_third_parties(Some(&pre.company_id))
@@ -379,8 +482,11 @@ async fn carry_forward(
 
 async fn balance_preview(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<BalanceRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_access(&req.company_id)?;
     let puc = state.store.list_puc(Some(&req.company_id)).await?;
     Ok(Json(ledger::trial_balance_preview(&req, &puc)))
 }
@@ -1709,6 +1815,186 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_headers_secret_guard_rate_limit_and_tenant_isolation_work() {
+        // 1. validate_production_secret rules
+        assert!(auth::validate_production_secret(false, true, None).is_ok());
+        assert!(auth::validate_production_secret(true, true, None).is_ok());
+        assert!(auth::validate_production_secret(true, false, None).is_err());
+        assert!(auth::validate_production_secret(
+            true,
+            false,
+            Some("vertika-dev-secret-change-in-prod")
+        )
+        .is_err());
+        assert!(auth::validate_production_secret(true, false, Some("muy-corto")).is_err());
+        assert!(auth::validate_production_secret(
+            true,
+            false,
+            Some("una-llave-productiva-muy-larga-y-aleatoria-12345")
+        )
+        .is_ok());
+
+        let router = build_router(Arc::new(AppState::demo_for_tests_with_auth(true)));
+
+        // 2. Security headers on HTTP responses
+        let h = router
+            .clone()
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            h.headers().get("x-content-type-options").and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            h.headers().get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY")
+        );
+
+        // 3. Multi-tenant read isolation (IDOR prevention)
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+        let scoped_create = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "solo.altavista@vertika.co",
+                            "nombre": "Contador Altavista",
+                            "password": "claveSegura2026",
+                            "rol": "CONTADOR",
+                            "companyIds": ["altavista"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scoped_create.status(), StatusCode::CREATED);
+
+        let login_scoped = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "solo.altavista@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_scoped.status(), StatusCode::OK);
+        let tok_scoped = json_body(login_scoped).await["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Scoped bootstrap contains only altavista
+        let scoped_boot = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/bootstrap")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scoped_boot.status(), StatusCode::OK);
+        let scoped_boot_json = json_body(scoped_boot).await;
+        let companies = scoped_boot_json["datos"]["companies"].as_array().unwrap();
+        assert_eq!(companies.len(), 1);
+        assert_eq!(companies[0]["id"], "altavista");
+
+        // Accessing Colina endpoints -> 403 Forbidden
+        let colina_entries = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/colina/entries")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(colina_entries.status(), StatusCode::FORBIDDEN);
+
+        let colina_bal = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/colina/reports/balance")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(colina_bal.status(), StatusCode::FORBIDDEN);
+
+        let colina_puc = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/puc?company_id=colina")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(colina_puc.status(), StatusCode::FORBIDDEN);
+
+        // Accessing Altavista works -> 200 OK
+        let alt_entries = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/altavista/entries")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(alt_entries.status(), StatusCode::OK);
+
+        // 4. Login brute-force rate limit -> 429 on 6th attempt
+        for _ in 0..5 {
+            let fail = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/auth/login")
+                        .header("x-forwarded-for", "203.0.113.42")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({ "email": "ataque@vertika.co", "password": "wrong" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(fail.status(), StatusCode::UNAUTHORIZED);
+        }
+        let throttled = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("x-forwarded-for", "203.0.113.42")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "ataque@vertika.co", "password": "wrong" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn postgres_relational_lifecycle_if_configured() {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
             return;
@@ -1785,6 +2071,7 @@ mod tests {
             store: Store::Postgres(pg),
             auth_required: false,
             seed_demo: true,
+            login_limiter: auth::LoginRateLimiter::new(),
         }));
         let h = router
             .clone()

@@ -88,6 +88,8 @@ pub struct CreateUserRequest {
     pub nombre: String,
     pub password: String,
     pub rol: Role,
+    #[serde(default, alias = "company_ids")]
+    pub company_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +163,119 @@ impl AuthContext {
             ))),
         }
     }
+
+    pub fn require_company_access(&self, company_id: &str) -> Result<(), ApiError> {
+        self.require_company_roles(
+            company_id,
+            &[
+                Role::Contador,
+                Role::Administrador,
+                Role::RevisorFiscal,
+                Role::Consejo,
+            ],
+        )
+    }
+
+    pub fn allowed_company_ids(&self) -> Vec<String> {
+        self.user.roles.iter().map(|r| r.company_id.clone()).collect()
+    }
+}
+
+const LOGIN_RATE_WINDOW_SECS: i64 = 60;
+const LOGIN_RATE_MAX_FAILS: usize = 5;
+
+pub struct LoginRateLimiter {
+    attempts: std::sync::Mutex<std::collections::HashMap<String, Vec<i64>>>,
+}
+
+impl LoginRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    pub fn check(&self, key: &str) -> Result<(), ApiError> {
+        let now = Utc::now().timestamp();
+        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
+        let mut map = self.attempts.lock().expect("rate limiter lock");
+        let recent_count = if let Some(timestamps) = map.get_mut(key) {
+            timestamps.retain(|&ts| ts > cutoff);
+            let len = timestamps.len();
+            if len == 0 {
+                map.remove(key);
+            }
+            len
+        } else {
+            0
+        };
+        if recent_count >= LOGIN_RATE_MAX_FAILS {
+            return Err(ApiError::TooManyRequests(
+                "Demasiados intentos fallidos de inicio de sesión. Intenta de nuevo en 1 minuto."
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn record_failure(&self, key: &str) {
+        let now = Utc::now().timestamp();
+        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
+        let mut map = self.attempts.lock().expect("rate limiter lock");
+        let entry = map.entry(key.to_string()).or_default();
+        entry.retain(|&ts| ts > cutoff);
+        entry.push(now);
+    }
+
+    pub fn clear(&self, key: &str) {
+        let mut map = self.attempts.lock().expect("rate limiter lock");
+        map.remove(key);
+    }
+}
+
+pub fn login_rate_key(headers: &HeaderMap, email: &str) -> String {
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or("local");
+    format!("{ip}|{}", email.trim().to_ascii_lowercase())
+}
+
+pub fn validate_production_secret(
+    auth_required: bool,
+    seed_demo: bool,
+    secret_env: Option<&str>,
+) -> Result<(), String> {
+    if !(auth_required && !seed_demo) {
+        return Ok(());
+    }
+    let trimmed = secret_env.map(str::trim).unwrap_or("");
+    if trimmed.is_empty() {
+        return Err(
+            "AUTH_SECRET es obligatorio cuando AUTH_REQUIRED=true y SEED_DEMO=false.".into(),
+        );
+    }
+    if trimmed == DEFAULT_AUTH_SECRET {
+        return Err(
+            "AUTH_SECRET no puede usar el secreto de desarrollo por defecto en producción.".into(),
+        );
+    }
+    if trimmed.len() < 32 {
+        return Err(
+            "AUTH_SECRET debe tener al menos 32 caracteres aleatorios en producción.".into(),
+        );
+    }
+    Ok(())
 }
 
 fn auth_secret() -> String {

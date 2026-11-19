@@ -12,8 +12,9 @@ use crate::error::ApiError;
 use crate::repo::{
     build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
     compute_cartera_total, compute_traslado_fondo, compute_unit_overdue_balances,
-    last_day_of_period, next_period_ym, normalize_frontend_lines, origin_from_agent,
-    parse_seed_bundle, validate_and_hash_frontend_lines, validate_create_pre_entry_input,
+    last_day_of_period, next_period_ym, normalize_frontend_lines, normalize_requested_companies,
+    origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
+    validate_create_pre_entry_input,
 };
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -156,15 +157,25 @@ impl MemoryRepo {
             ));
         }
 
-        let roles = g
+        let requested = normalize_requested_companies(req.company_ids.as_deref());
+        let roles: Vec<CompanyRole> = g
             .datos
             .companies
             .iter()
+            .filter(|c| match &requested {
+                Some(scope) => scope.iter().any(|s| s == &c.id),
+                None => true,
+            })
             .map(|c| CompanyRole {
                 company_id: c.id.clone(),
                 role: req.rol,
             })
             .collect();
+        if roles.is_empty() {
+            return Err(ApiError::BadRequest(
+                "Ninguna copropiedad válida seleccionada.".into(),
+            ));
+        }
         let user = AuthUser {
             id: format!("usr-{}", Uuid::new_v4().simple()),
             email,

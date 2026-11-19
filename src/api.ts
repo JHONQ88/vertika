@@ -207,6 +207,7 @@ export interface CreateUserPayload {
   nombre: string;
   password: string;
   rol: UserRole;
+  companyIds?: string[];
 }
 
 export async function createUserApi(payload: CreateUserPayload): Promise<{ user: AuthUser }> {

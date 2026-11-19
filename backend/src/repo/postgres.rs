@@ -13,8 +13,8 @@ use crate::error::ApiError;
 use crate::repo::{
     build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
     compute_unit_overdue_balances, last_day_of_period, next_period_ym, normalize_frontend_lines,
-    origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
-    validate_create_pre_entry_input,
+    normalize_requested_companies, origin_from_agent, parse_seed_bundle,
+    validate_and_hash_frontend_lines, validate_create_pre_entry_input,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -2096,10 +2096,17 @@ impl PostgresRepo {
         .fetch_all(&mut *tx)
         .await?;
 
+        let requested = normalize_requested_companies(req.company_ids.as_deref());
         let mut roles = Vec::with_capacity(comp_rows.len());
         for cr in comp_rows {
             let cid: Uuid = cr.try_get("id")?;
             let slug: String = cr.try_get("slug")?;
+            if let Some(scope) = &requested {
+                let cid_str = cid.to_string();
+                if !scope.iter().any(|s| s == &slug || s == &cid_str) {
+                    continue;
+                }
+            }
             sqlx::query(
                 "INSERT INTO usuario_copropiedad_roles (usuario_id, copropiedad_id, rol)
                  VALUES ($1, $2, $3)",
@@ -2113,6 +2120,11 @@ impl PostgresRepo {
                 company_id: slug,
                 role: req.rol,
             });
+        }
+        if roles.is_empty() {
+            return Err(ApiError::BadRequest(
+                "Ninguna copropiedad válida seleccionada.".into(),
+            ));
         }
         tx.commit().await?;
 

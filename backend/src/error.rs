@@ -12,6 +12,7 @@ pub enum ApiError {
     Forbidden(String),
     NotFound(String),
     Conflict(String),
+    TooManyRequests(String),
     Unprocessable {
         message: String,
         details: Option<Value>,
@@ -43,6 +44,9 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m, None),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, "NOT_FOUND", m, None),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, "CONFLICT", m, None),
+            ApiError::TooManyRequests(m) => {
+                (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS", m, None)
+            }
             ApiError::Unprocessable { message, details } => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "VALIDATION_ERROR", message, details)
             }
