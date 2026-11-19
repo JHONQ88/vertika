@@ -1,13 +1,13 @@
 # Vértika Backend (Rust)
 
-API y motor contable determinista para copropiedades (PUC ESAL), implementado en **Rust** con **Axum**.
+API y motor contable determinista para copropiedades (PUC ESAL), implementado en **Rust** con **Axum**, **SQLx** y **rust_decimal**.
 
-> Estado: backend funcional con **API HTTP**, validación determinista y **persistencia de estado**. Si `DATABASE_URL` está configurado, aplica migraciones (`001_init.sql`, `002_estado_kv.sql`) y guarda/lee el estado de la aplicación en PostgreSQL; sin `DATABASE_URL` opera en modo `demo-memory`.
+> Estado: backend relacional con **API HTTP transaccional**, aritmética exacta `Decimal`, hash criptográfico **SHA-256**, migraciones automáticas (`sqlx::migrate!`) y triggers de integridad en PostgreSQL 16. Sin `DATABASE_URL` opera con el mismo contrato relacional en modo `demo-memory`.
 
 ## Requisitos
 
 - [Rust](https://rustup.rs/) 1.75+ (cargo, rustc)
-- (Opcional) Docker / PostgreSQL 16+ para persistencia real
+- (Opcional) Docker / PostgreSQL 16+ para persistencia relacional ACID
 
 ## Ejecutar
 
@@ -33,75 +33,62 @@ docker compose up -d db
 DATABASE_URL=postgres://vertika:vertika@localhost:5432/vertika
 ```
 
-3. Ejecuta el backend (aplica migraciones automáticamente al iniciar):
+3. Ejecuta el backend (aplica `001_init.sql`, `002_estado_kv.sql` y `003_relational_ledger.sql` vía `sqlx::migrate!` y carga la semilla relacional si la base está vacía):
 
 ```bash
 cargo run
 ```
 
-También puedes aplicar las migraciones manualmente con `psql -f migrations/001_init.sql -f migrations/002_estado_kv.sql`.
+### Tests
+
+```bash
+# Modo memoria (sin PostgreSQL)
+cargo test
+
+# Contra PostgreSQL 16 real (incluye pruebas de triggers SQL y ciclo HTTP completo)
+DATABASE_URL=postgres://vertika:vertika@localhost:5432/vertika cargo test
+```
 
 ## Endpoints
+
+### Generales y motor determinista
 
 | Método | Ruta | Descripción |
 | --- | --- | --- |
 | `GET` | `/health` | Estado del servicio y modo (`demo-memory` o `postgres`) |
-| `GET` | `/api/v1/bootstrap` | Datos maestros + estado de la aplicación (para el frontend) |
-| `GET` | `/api/v1/state` | Estado actual (pre-asientos, comprobantes, auditoría, periodos cerrados) |
-| `PUT` | `/api/v1/state` | Guarda el estado de la aplicación |
-| `POST` | `/api/v1/reset` | Restablece el estado de demostración |
-| `GET` | `/api/v1/puc` | Catálogo PUC ESAL de demostración |
-| `POST` | `/api/v1/ledger/validate` | Valida un borrador de comprobante (partida doble, cuentas, montos) |
-| `POST` | `/api/v1/ledger/preview` | Valida y devuelve hash/preview de asiento |
+| `GET` | `/api/v1/bootstrap` | Datos maestros + estado cargados desde tablas relacionales |
+| `GET` / `PUT` | `/api/v1/state` | Lectura y compatibilidad de estado de aplicación |
+| `POST` | `/api/v1/reset` | Restablece las tablas relacionales a la semilla inicial |
+| `GET` | `/api/v1/puc` | Catálogo PUC ESAL (acepta `?company_id=...`) |
+| `POST` | `/api/v1/ledger/validate` | Valida un borrador de comprobante (partida doble, PUC, montos) |
+| `POST` | `/api/v1/ledger/preview` | Valida y devuelve hash SHA-256 (64 hex) y preview de asiento |
 | `POST` | `/api/v1/pre-entries/carry-forward` | Acarreo determinista de retenciones según tercero |
-| `POST` | `/api/v1/balance` | Vista previa de balance de prueba a partir de saldos/movimientos enviados |
+| `POST` | `/api/v1/balance` | Vista previa de balance de prueba a partir de saldos/movimientos |
 
-### Ejemplo: validar asiento
+### Operaciones transaccionales del ledger (Bloque B)
 
-```bash
-curl -X POST http://localhost:8080/api/v1/ledger/validate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "company_id":"altavista",
-    "period":"2026-11",
-    "entry_type":"CC",
-    "date":"2026-11-12",
-    "description":"Prueba",
-    "lines":[
-      {"account":"513505","description":"Vigilancia","debit":1000000,"credit":0},
-      {"account":"220505","description":"Proveedor","debit":0,"credit":1000000}
-    ]
-  }'
-```
+| Método | Ruta | Descripción |
+| --- | --- | --- |
+| `PUT` | `/api/v1/pre-entries/:id/lines` | Actualiza líneas editadas de un pre-asiento pendiente |
+| `POST` | `/api/v1/pre-entries/:id/approve` | Asienta comprobante + movimientos + auditoría en transacción ACID |
+| `POST` | `/api/v1/pre-entries/:id/reject` | Marca pre-asiento como `RECHAZADO` y registra auditoría |
+| `POST` | `/api/v1/entries` | Crea y asienta un comprobante contable manual (`201 Created`) |
+| `POST` | `/api/v1/entries/:id/void` | Anula un comprobante generando nota contable `NC` de reverso |
+| `GET` | `/api/v1/companies/:company_id/entries` | Lista comprobantes de una copropiedad (`?period=YYYY-MM`) |
+| `POST` | `/api/v1/companies/:company_id/periods/:period/close` | Ejecuta cierre mensual (`NC`) y bloquea el periodo |
+| `GET` | `/api/v1/companies/:company_id/reports/balance` | Balance de prueba agregado directo del ledger (`?period=...`) |
+| `GET` | `/api/v1/companies/:company_id/audit` | Eventos de auditoría de la copropiedad |
 
-## Estructura
+## Garantías de integridad en PostgreSQL (`003_relational_ledger.sql`)
 
-```
-backend/
-  src/
-    main.rs               # servidor Axum, rutas, bootstrap/estado
-    db.rs                 # conexión PostgreSQL, migraciones y persistencia de estado
-    domain/
-      mod.rs              # modelos, catálogos demo
-      ledger.rs           # validación, hash, acarreo de retenciones, balance preview
-  migrations/
-    001_init.sql          # esquema relacional (copropiedades, ledger, pre-asientos, auditoría)
-    002_estado_kv.sql     # almacenamiento del estado de aplicación (integración MVP)
-  seed_bootstrap.json     # datos maestros y estado inicial para bootstrap
-  .env.example
-```
+- **`trg_validar_cuadre_comprobante`** (`CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY DEFERRED`): verifica al hacer `COMMIT` que todo comprobante tenga al menos 2 movimientos en `movimientos_ledger` y que `SUM(debito) = SUM(credito) = cabecera`.
+- **`trg_bloquear_periodo_cerrado`**: rechaza inserciones de comprobantes en periodos presentes en `periodos_cerrados`.
+- **`trg_inmutabilidad_comprobante`** y **`trg_inmutabilidad_movimientos`**: impiden eliminar o alterar comprobantes/movimientos asentados o anulados (solo permiten cambiar `estado` de `ASENTADO` a `ANULADO` vía reversión).
+- **`fk_mov_puc_cuenta`**: clave foránea compuesta `(copropiedad_id, cuenta_codigo)` contra `puc_esal_cuentas`.
 
-## Principios
+## Próximos pasos (Bloque C)
 
-- **Determinismo contable**: el backend decide si un asiento es válido (débitos = créditos, cuentas existentes, reglas de retención). La IA solo propone.
-- **Integridad**: el esquema incluye restricciones de cuadre y tipos; en producción se refuerza con transacciones, triggers y RLS por `copropiedad_id`.
-- **Persistencia**: con `DATABASE_URL` el estado se guarda en PostgreSQL (`app_estado`); el esquema relacional queda listo para normalización progresiva.
-
-## Próximos pasos
-
-1. Normalizar persistencia: leer/escribir pre-asientos, comprobantes y auditoría en tablas relacionales (no solo JSON de estado).
-2. CRUD de copropiedades, unidades, terceros y PUC por tenant.
-3. Posting transaccional en servidor (consecutivos, hash, bloqueo de periodos, auditoría).
-4. Reportes y cierre calculados/servidos desde backend.
-5. Autenticación, RBAC y Row-Level Security.
-6. Integraciones: DIAN, recaudo (PSE/Bre-B/NFC), dispersión y mensajería.
+1. Autenticación (JWT/sesiones), RBAC por rol (`contador`, `administrador`, `revisor`, `consejo`) y Row-Level Security en PostgreSQL.
+2. CRUD de copropiedades, unidades, terceros, PUC y presupuestos.
+3. Causación masiva de expensas, comprobantes manuales desde UI y reportes PDF/DIAN.
+4. Ingesta real (XML UBL 2.1 DIAN / OCR / webhooks Bre-B & NFC).

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PreAsiento } from './domain/types';
 import { acarrearPreAsiento } from './domain/engine';
-import { acciones, empresaActiva, esPeriodoBloqueado, useEstado, DATOS } from './store';
+import { acciones, empresaActiva, esPeriodoBloqueado, useEstado, useSyncStatus, DATOS } from './store';
 import { fmtPeriodo } from './domain/format';
 import { FKeyBar, Sidebar, Topbar } from './components/Shell';
 import { AyudaModal, CommandPalette, EmpresasModal, PeriodosModal } from './components/Overlays';
@@ -21,6 +21,7 @@ type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | null;
 
 export default function App() {
   const estado = useEstado();
+  const syncStatus = useSyncStatus();
   const [view, setView] = useState<ViewKey>('bandeja');
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [filtros, setFiltrosState] = useState<FiltrosVista>({});
@@ -60,8 +61,8 @@ export default function App() {
   }, []);
 
   const aprobar = useCallback(
-    (id: string) => {
-      const res = acciones.aprobarPreAsiento(id);
+    async (id: string) => {
+      const res = await acciones.aprobarPreAsiento(id);
       if (res.ok) {
         toast({
           tone: 'ok',
@@ -77,8 +78,8 @@ export default function App() {
   );
 
   const rechazar = useCallback(
-    (id: string) => {
-      const res = acciones.rechazarPreAsiento(id);
+    async (id: string) => {
+      const res = await acciones.rechazarPreAsiento(id);
       if (res.ok) {
         toast({ tone: 'info', title: 'Pre-asiento devuelto', msg: 'El agente lo revisará de nuevo.' });
         setPreSeleccionado(null);
@@ -122,7 +123,7 @@ export default function App() {
         const id =
           preSeleccionado ??
           estado.preAsientos.find((p) => p.empresaId === empresa.id && p.periodo === estado.periodo)?.id;
-        if (view === 'bandeja' && id) aprobar(id);
+        if (view === 'bandeja' && id) void aprobar(id);
         else toast({ tone: 'info', title: 'F10 · Asentar', msg: 'Ubícate en la bandeja de pre-asientos para asentar.' });
       } else if (k === 'F11') {
         const count = MODO_COUNT[view] || 1;
@@ -210,8 +211,8 @@ export default function App() {
             {...vistaProps}
             seleccionado={preSeleccionado}
             setSeleccionado={setPreSeleccionado}
-            onAprobar={aprobar}
-            onRechazar={rechazar}
+            onAprobar={(id) => void aprobar(id)}
+            onRechazar={(id) => void rechazar(id)}
             onAcarrear={acarrear}
           />
         );
@@ -243,6 +244,7 @@ export default function App() {
         pendientes={pendientes}
         periodo={estado.periodo}
         bloqueado={bloqueado}
+        syncStatus={syncStatus}
         onEmpresas={() => setOverlay('empresas')}
         onPeriodo={() => setOverlay('periodos')}
         onAyuda={() => setOverlay('ayuda')}

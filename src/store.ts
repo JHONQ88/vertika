@@ -14,12 +14,50 @@ import {
   validarAsiento,
 } from './domain/engine';
 import { fmtPeriodo, ultimoDia } from './domain/format';
-import { apiEnabled, fetchBootstrap, resetRemote, saveState } from './api';
+import {
+  apiEnabled,
+  approvePreEntryApi,
+  closePeriodApi,
+  fetchBootstrap,
+  rejectPreEntryApi,
+  resetRemote,
+  updatePreEntryLinesApi,
+  voidEntryApi,
+} from './api';
 
 export let DATOS = buildSeed();
 
 const KEY = 'vertika.estado.v4';
 const VERSION = 4;
+
+export interface SyncStatus {
+  mode: 'local' | 'demo-memory' | 'postgres';
+  syncing: boolean;
+  lastError: string | null;
+}
+
+let syncStatus: SyncStatus = {
+  mode: apiEnabled ? 'demo-memory' : 'local',
+  syncing: false,
+  lastError: null,
+};
+const syncListeners = new Set<() => void>();
+
+function setSyncStatus(patch: Partial<SyncStatus>) {
+  syncStatus = { ...syncStatus, ...patch };
+  syncListeners.forEach((l) => l());
+}
+
+export function useSyncStatus(): SyncStatus {
+  return useSyncExternalStore(
+    (l) => {
+      syncListeners.add(l);
+      return () => syncListeners.delete(l);
+    },
+    () => syncStatus,
+    () => syncStatus,
+  );
+}
 
 function estadoInicial(): EstadoApp {
   return {
@@ -66,19 +104,9 @@ function persistLocal(next: EstadoApp) {
   }
 }
 
-function persist(next: EstadoApp) {
-  persistLocal(next);
-  if (apiEnabled) {
-    void saveState(next).catch((e) => {
-      // La UI sigue operando con estado local; se registra el fallo.
-      console.error('No se pudo sincronizar con el backend', e);
-    });
-  }
-}
-
-function commit(next: EstadoApp) {
+function commitLocal(next: EstadoApp) {
   state = next;
-  persist(next);
+  persistLocal(next);
   listeners.forEach((l) => l());
 }
 
@@ -118,14 +146,14 @@ export function esPeriodoBloqueado(estado: EstadoApp, periodo: string): boolean 
   return periodo > actual;
 }
 
-export function evento(actor: string, accion: string, detalle: string): EventoAuditoria {
+export function evento(actor: string, accion: string, detalle: string, empresaId?: string): EventoAuditoria {
   return {
     id: `aud-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`,
     ts: new Date().toISOString(),
     actor,
     accion,
     detalle,
-    empresaId: state.activeCompanyId,
+    empresaId: empresaId ?? state.activeCompanyId,
   };
 }
 
@@ -163,21 +191,55 @@ export const acciones = {
   cambiarEmpresa(id: string) {
     const empresa = DATOS.companies.find((c) => c.id === id);
     if (!empresa) return;
-    commit({ ...state, activeCompanyId: id, periodo: empresa.periodoActual });
+    commitLocal({ ...state, activeCompanyId: id, periodo: empresa.periodoActual });
   },
 
   cambiarPeriodo(periodo: string) {
-    commit({ ...state, periodo });
+    commitLocal({ ...state, periodo });
   },
 
   cambiarLineasPreAsiento(id: string, lineas: Linea[]) {
-    commit({
+    commitLocal({
       ...state,
       preAsientos: state.preAsientos.map((p) => (p.id === id ? { ...p, lineas } : p)),
     });
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      void updatePreEntryLinesApi(id, lineas)
+        .then(() => setSyncStatus({ syncing: false, lastError: null }))
+        .catch((e: unknown) =>
+          setSyncStatus({
+            syncing: false,
+            lastError: e instanceof Error ? e.message : 'Error sincronizando líneas',
+          }),
+        );
+    }
   },
 
-  aprobarPreAsiento(id: string): Resultado {
+  async aprobarPreAsiento(id: string): Promise<Resultado> {
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await approvePreEntryApi(id);
+        commitLocal({
+          ...state,
+          comprobantes: [...state.comprobantes, res.comprobante],
+          preAsientos: state.preAsientos.filter((p) => p.id !== res.preAsientoId),
+          auditoria: [res.auditoria, ...state.auditoria].slice(0, 200),
+        });
+        setSyncStatus({ syncing: false, lastError: null });
+        return {
+          ok: true,
+          comprobante: res.comprobante,
+          detalle: `${res.comprobante.tipo}-${res.comprobante.consecutivo}`,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo asentar en el servidor.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+
     const pre = state.preAsientos.find((p) => p.id === id);
     if (!pre) return { ok: false, error: 'El pre-asiento ya no existe.' };
     if (esPeriodoBloqueado(state, pre.periodo)) {
@@ -206,7 +268,7 @@ export const acciones = {
     };
     const comp: Comprobante = { ...base, hash: hashDe(base) };
     const ev = evento('Contador demo', 'Aprobó pre-asiento IA', `${pre.tipo}-${consecutivo} · ${pre.descripcion}`);
-    commit({
+    commitLocal({
       ...state,
       comprobantes: [...state.comprobantes, comp],
       preAsientos: state.preAsientos.filter((p) => p.id !== id),
@@ -215,16 +277,115 @@ export const acciones = {
     return { ok: true, comprobante: comp, detalle: `${pre.tipo}-${consecutivo}` };
   },
 
-  rechazarPreAsiento(id: string): Resultado {
+  async rechazarPreAsiento(id: string): Promise<Resultado> {
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await rejectPreEntryApi(id);
+        commitLocal({
+          ...state,
+          preAsientos: state.preAsientos.filter((p) => p.id !== id),
+          auditoria: [res.auditoria, ...state.auditoria].slice(0, 200),
+        });
+        setSyncStatus({ syncing: false, lastError: null });
+        return { ok: true };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo devolver el pre-asiento.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+
     const pre = state.preAsientos.find((p) => p.id === id);
     if (!pre) return { ok: false, error: 'El pre-asiento ya no existe.' };
     const ev = evento('Contador demo', 'Devolvió pre-asiento al agente', pre.descripcion);
-    commit({
+    commitLocal({
       ...state,
       preAsientos: state.preAsientos.filter((p) => p.id !== id),
       auditoria: [ev, ...state.auditoria].slice(0, 200),
     });
     return { ok: true };
+  },
+
+  async anularComprobante(id: string, motivo?: string): Promise<Resultado> {
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await voidEntryApi(id, motivo);
+        commitLocal({
+          ...state,
+          comprobantes: [
+            ...state.comprobantes.map((c) => (c.id === res.anulado.id ? res.anulado : c)),
+            res.reverso,
+          ],
+          auditoria: [res.auditoria, ...state.auditoria].slice(0, 200),
+        });
+        setSyncStatus({ syncing: false, lastError: null });
+        return {
+          ok: true,
+          comprobante: res.reverso,
+          detalle: `${res.reverso.tipo}-${res.reverso.consecutivo}`,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo anular el comprobante.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+
+    const orig = state.comprobantes.find((c) => c.id === id);
+    if (!orig) return { ok: false, error: 'El comprobante no existe.' };
+    if (orig.estado === 'ANULADO') return { ok: false, error: 'El comprobante ya fue anulado.' };
+    if (esPeriodoBloqueado(state, orig.periodo)) {
+      return { ok: false, error: `El periodo ${fmtPeriodo(orig.periodo)} está cerrado.` };
+    }
+
+    const consecutivo = proximoConsecutivo(state.comprobantes, orig.empresaId, 'NC');
+    const revId = `${orig.empresaId}-NC-${consecutivo}`;
+    const revLineas: Linea[] = orig.lineas.map((l, idx) => ({
+      ...l,
+      id: `${revId}-${idx + 1}`,
+      descripcion: `Reverso: ${l.descripcion}`,
+      debito: l.credito,
+      credito: l.debito,
+    }));
+    const valid = validarAsiento(revLineas);
+    if (!valid.ok) return { ok: false, error: valid.errores[0] ?? 'El reverso no cuadra.' };
+
+    const motivoTxt = motivo?.trim() || 'Anulación solicitada por el contador';
+    const base: Omit<Comprobante, 'hash'> = {
+      id: revId,
+      empresaId: orig.empresaId,
+      periodo: orig.periodo,
+      tipo: 'NC',
+      consecutivo,
+      fecha: orig.fecha,
+      estado: 'ASENTADO',
+      origen: 'CONTADOR_MANUAL',
+      descripcion: `Anulación ${orig.tipo}-${orig.consecutivo}: ${motivoTxt}`,
+      lineas: revLineas,
+      totalDebito: valid.totalDebito,
+      totalCredito: valid.totalCredito,
+      referencia: `${orig.tipo}-${orig.consecutivo}`,
+      creadoPor: 'Contador demo',
+      createdAt: new Date().toISOString(),
+    };
+    const reverso: Comprobante = { ...base, hash: hashDe(base) };
+    const ev = evento(
+      'Contador demo',
+      'Anuló comprobante',
+      `${orig.tipo}-${orig.consecutivo} anulado con reverso NC-${consecutivo} (${motivoTxt})`,
+      orig.empresaId,
+    );
+    commitLocal({
+      ...state,
+      comprobantes: [
+        ...state.comprobantes.map((c) => (c.id === orig.id ? { ...c, estado: 'ANULADO' as const } : c)),
+        reverso,
+      ],
+      auditoria: [ev, ...state.auditoria].slice(0, 200),
+    });
+    return { ok: true, comprobante: reverso, detalle: `NC-${consecutivo}` };
   },
 
   async ejecutarCierre(
@@ -233,6 +394,36 @@ export const acciones = {
   ): Promise<Resultado> {
     const opts = opciones ?? { depreciacion: true, provision: true, traslado: true };
     const empresa = empresaActiva(state);
+
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await closePeriodApi(empresa.id, periodo, opts);
+        const cerrados = state.periodosCerrados[empresa.id] ?? [];
+        commitLocal({
+          ...state,
+          comprobantes: [...state.comprobantes, res.comprobante],
+          periodosCerrados: {
+            ...state.periodosCerrados,
+            [empresa.id]: cerrados.includes(res.periodoCerrado)
+              ? cerrados
+              : [...cerrados, res.periodoCerrado],
+          },
+          auditoria: [res.auditoria, ...state.auditoria].slice(0, 200),
+        });
+        setSyncStatus({ syncing: false, lastError: null });
+        return {
+          ok: true,
+          comprobante: res.comprobante,
+          detalle: `${res.comprobante.tipo}-${res.comprobante.consecutivo}`,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo cerrar el periodo en el servidor.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+
     if (esPeriodoBloqueado(state, periodo)) {
       return { ok: false, error: `El periodo ${fmtPeriodo(periodo)} ya está cerrado o no está abierto.` };
     }
@@ -276,7 +467,7 @@ export const acciones = {
       'Ejecutó cierre mensual',
       `${fmtPeriodo(periodo)}: ${ops.join(', ')}.`,
     );
-    commit({
+    commitLocal({
       ...state,
       comprobantes: [...state.comprobantes, comp],
       periodosCerrados: { ...state.periodosCerrados, [empresa.id]: [...cerrados, periodo] },
@@ -287,23 +478,26 @@ export const acciones = {
 
   async restablecer() {
     if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
       try {
         const res: any = await resetRemote();
+        if (res?.datos) DATOS = res.datos;
+        else {
+          const boot = await fetchBootstrap();
+          DATOS = boot.datos ?? DATOS;
+        }
         const nextEstado = res?.estado ?? res;
-        DATOS = buildSeed();
-        // refrescar masters desde bootstrap por si cambiaron
-        const boot = await fetchBootstrap();
-        DATOS = boot.datos ?? DATOS;
-        state = nextEstado;
-        persistLocal(state);
-        listeners.forEach((l) => l());
+        if (nextEstado) commitLocal(nextEstado);
+        setSyncStatus({ syncing: false, lastError: null });
         return;
-      } catch (e) {
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo restablecer en backend';
+        setSyncStatus({ syncing: false, lastError: msg });
         console.error('No se pudo restablecer en backend, usando local', e);
       }
     }
     DATOS = buildSeed();
-    commit(estadoInicial());
+    commitLocal(estadoInicial());
   },
 };
 
@@ -315,15 +509,18 @@ export const API_MODE = apiEnabled;
 
 async function bootstrapFromApi() {
   if (!apiEnabled) return;
+  setSyncStatus({ syncing: true, lastError: null });
   try {
     const boot = await fetchBootstrap();
     if (boot?.datos) DATOS = boot.datos;
     if (boot?.estado) {
-      state = boot.estado;
-      persistLocal(state);
-      listeners.forEach((l) => l());
+      commitLocal(boot.estado);
     }
-  } catch (e) {
+    const mode = boot?.mode === 'postgres' ? 'postgres' : 'demo-memory';
+    setSyncStatus({ mode, syncing: false, lastError: null });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Backend no disponible; operando en modo local.';
+    setSyncStatus({ mode: 'local', syncing: false, lastError: msg });
     console.error('No se pudo cargar bootstrap desde backend; se usa modo local.', e);
   }
 }

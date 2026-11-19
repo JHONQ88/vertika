@@ -22,9 +22,25 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: vertika
+          POSTGRES_PASSWORD: vertika
+          POSTGRES_DB: vertika
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U vertika -d vertika"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run Rust tests
+      - name: Run Rust tests against PostgreSQL 16
         working-directory: backend
+        env:
+          DATABASE_URL: postgres://vertika:vertika@localhost:5432/vertika
         run: cargo test

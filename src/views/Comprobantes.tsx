@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Comprobante, TipoComprobante } from '../domain/types';
 import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
-import { DATOS } from '../store';
+import { acciones, DATOS, esPeriodoBloqueado } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Empty, ViewHeader } from '../components/ui';
 import { DetalleComprobante } from '../components/DetalleComprobante';
@@ -48,6 +48,21 @@ export function Comprobantes(props: VistaProps) {
     a.click();
     URL.revokeObjectURL(url);
     toast({ tone: 'ok', title: 'Comprobantes exportados', msg: `${lista.length} documentos` });
+  };
+
+  const anular = async (id: string) => {
+    const res = await acciones.anularComprobante(id);
+    if (res.ok) {
+      toast({
+        tone: 'ok',
+        title: 'Comprobante anulado',
+        msg: `Generado reverso ${res.detalle}`,
+      });
+      setDetalleSeleccionado(null);
+      if (filtros.comprobanteId) setFiltros({ comprobanteId: undefined });
+    } else {
+      toast({ tone: 'error', title: 'No se pudo anular', msg: res.error });
+    }
   };
 
   return (
@@ -124,6 +139,8 @@ export function Comprobantes(props: VistaProps) {
         comprobante={detalle}
         terceros={DATOS.terceros}
         unidades={DATOS.units.filter((u) => u.empresaId === empresa.id)}
+        puedeAnular={detalle ? !esPeriodoBloqueado(estado, detalle.periodo) : false}
+        onAnular={anular}
         onClose={() => {
           setDetalleSeleccionado(null);
           if (filtros.comprobanteId) setFiltros({ comprobanteId: undefined });

@@ -1,13 +1,15 @@
 import { Icon } from './Icon';
-import { Logo } from './ui';
+import { Badge, Logo } from './ui';
 import { fmtPeriodo } from '../domain/format';
 import { NAV, type ViewKey } from '../ui-types';
+import type { SyncStatus } from '../store';
 
 export function Topbar({
   empresa,
   pendientes,
   periodo,
   bloqueado,
+  syncStatus,
   onEmpresas,
   onPeriodo,
   onAyuda,
@@ -16,10 +18,25 @@ export function Topbar({
   pendientes: number;
   periodo: string;
   bloqueado: boolean;
+  syncStatus?: SyncStatus;
   onEmpresas: () => void;
   onPeriodo: () => void;
   onAyuda: () => void;
 }) {
+  const modeLabel =
+    syncStatus?.mode === 'postgres'
+      ? 'PostgreSQL'
+      : syncStatus?.mode === 'demo-memory'
+        ? 'API memoria'
+        : 'Modo local';
+  const modeTone = syncStatus?.lastError
+    ? 'warn'
+    : syncStatus?.mode === 'postgres'
+      ? 'ok'
+      : syncStatus?.mode === 'demo-memory'
+        ? 'info'
+        : 'neutral';
+
   return (
     <header className="topbar">
       <div className="brand">
@@ -58,6 +75,13 @@ export function Topbar({
       </div>
 
       <div className="topbar-right">
+        {syncStatus && (
+          <span title={syncStatus.lastError ?? `Persistencia: ${modeLabel}`}>
+            <Badge tone={modeTone}>
+              {syncStatus.syncing ? 'Sincronizando…' : syncStatus.lastError ? `${modeLabel} · aviso` : modeLabel}
+            </Badge>
+          </span>
+        )}
         <div className="ia-status" title="Agentes de IA activos">
           <span className="pulse" />
           <span>IA activa</span>

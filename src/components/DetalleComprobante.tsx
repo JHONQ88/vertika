@@ -1,25 +1,49 @@
+import { useState } from 'react';
 import type { Comprobante, Tercero, Unidad } from '../domain/types';
 import { CUENTA_MAP } from '../domain/puc';
 import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
-import { Badge } from './ui';
+import { Badge, Btn } from './ui';
 import { Icon } from './Icon';
 
 export function DetalleComprobante({
   comprobante,
   terceros,
   unidades,
+  puedeAnular = false,
+  onAnular,
   onClose,
 }: {
   comprobante: Comprobante | null;
   terceros: Tercero[];
   unidades: Unidad[];
+  puedeAnular?: boolean;
+  onAnular?: (id: string) => Promise<void> | void;
   onClose: () => void;
 }) {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [anulando, setAnulando] = useState(false);
+
   if (!comprobante) return null;
   const c = comprobante;
   const tercero = (id?: string) => terceros.find((t) => t.id === id);
   const unidad = (id?: string) => unidades.find((u) => u.id === id);
   const cuadra = Math.abs(c.totalDebito - c.totalCredito) < 0.01;
+  const confirmando = confirmId === c.id;
+
+  const ejecutarAnulacion = async () => {
+    if (!onAnular || !puedeAnular || anulando) return;
+    if (!confirmando) {
+      setConfirmId(c.id);
+      return;
+    }
+    setAnulando(true);
+    try {
+      await onAnular(c.id);
+      setConfirmId(null);
+    } finally {
+      setAnulando(false);
+    }
+  };
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -31,7 +55,9 @@ export function DetalleComprobante({
               <h2>
                 {c.tipo}-{c.consecutivo}
               </h2>
-              <Badge tone={cuadra ? 'ok' : 'error'}>{cuadra ? 'Cuadra' : 'Descuadrado'}</Badge>
+              <Badge tone={c.estado === 'ANULADO' ? 'error' : cuadra ? 'ok' : 'error'}>
+                {c.estado === 'ANULADO' ? 'Anulado' : cuadra ? 'Cuadra' : 'Descuadrado'}
+              </Badge>
             </div>
             <p>{c.descripcion}</p>
           </div>
@@ -59,7 +85,9 @@ export function DetalleComprobante({
           </div>
           <div>
             <small>Hash</small>
-            <strong className="mono">#{c.hash}</strong>
+            <strong className="mono" title={c.hash}>
+              #{c.hash.slice(0, 12)}
+            </strong>
           </div>
           <div>
             <small>Creado por</small>
@@ -107,6 +135,30 @@ export function DetalleComprobante({
               </tr>
             </tfoot>
           </table>
+
+          {c.estado === 'ASENTADO' && onAnular && (
+            <div className="cierre-acciones" style={{ marginTop: 14, justifyContent: 'flex-end' }}>
+              {confirmando && (
+                <Btn size="sm" variant="ghost" onClick={() => setConfirmId(null)} disabled={anulando}>
+                  Cancelar
+                </Btn>
+              )}
+              <Btn
+                size="sm"
+                variant={confirmando ? 'danger' : 'outline'}
+                icon="x"
+                disabled={!puedeAnular || anulando}
+                title={puedeAnular ? 'Genera nota contable NC de reverso' : 'Periodo cerrado: solo lectura'}
+                onClick={() => void ejecutarAnulacion()}
+              >
+                {anulando
+                  ? 'Anulando…'
+                  : confirmando
+                    ? 'Confirmar anulación (genera NC)'
+                    : 'Anular comprobante'}
+              </Btn>
+            </div>
+          )}
         </div>
       </aside>
     </div>

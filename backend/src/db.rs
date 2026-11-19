@@ -1,4 +1,3 @@
-use axum::http::StatusCode;
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::time::Duration;
@@ -15,21 +14,8 @@ impl Db {
             .acquire_timeout(Duration::from_secs(5))
             .connect(database_url)
             .await?;
-        // Migraciones simples en orden (001, 002)
-        let m1 = include_str!("../migrations/001_init.sql");
-        let m2 = include_str!("../migrations/002_estado_kv.sql");
-        sqlx::raw_sql(m1).execute(&pool).await?;
-        sqlx::raw_sql(m2).execute(&pool).await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self { pool })
-    }
-
-    pub async fn get_state(&self, id: &str) -> Result<Option<Value>, sqlx::Error> {
-        let row: Option<(Value,)> =
-            sqlx::query_as("SELECT payload FROM app_estado WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.map(|r| r.0))
     }
 
     pub async fn set_state(&self, id: &str, payload: &Value) -> Result<(), sqlx::Error> {
@@ -43,9 +29,4 @@ impl Db {
         .await?;
         Ok(())
     }
-}
-
-pub fn db_error(e: sqlx::Error) -> (StatusCode, String) {
-    tracing::error!(error = %e, "db error");
-    (StatusCode::INTERNAL_SERVER_ERROR, "Error de base de datos".into())
 }
