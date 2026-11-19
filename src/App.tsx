@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PreAsiento } from './domain/types';
 import { acarrearPreAsiento } from './domain/engine';
-import { acciones, empresaActiva, esPeriodoBloqueado, useEstado, useSyncStatus, DATOS } from './store';
+import { acciones, empresaActiva, esPeriodoBloqueado, tienePermiso, useAuth, useEstado, useSyncStatus, DATOS } from './store';
 import { fmtPeriodo } from './domain/format';
 import { FKeyBar, Sidebar, Topbar } from './components/Shell';
 import { AyudaModal, CommandPalette, EmpresasModal, PeriodosModal } from './components/Overlays';
+import { AuthModal } from './components/AuthModal';
 import { ToastStack } from './components/ui';
 import { MODO_COUNT, type FiltrosVista, type Toast, type ToastData, type ViewKey, type VistaProps } from './ui-types';
 import { Bandeja } from './views/Bandeja';
@@ -17,11 +18,12 @@ import { Maestros } from './views/Maestros';
 import { Cierre } from './views/Cierre';
 import { Ajustes } from './views/Ajustes';
 
-type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | null;
+type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | 'auth' | null;
 
 export default function App() {
   const estado = useEstado();
   const syncStatus = useSyncStatus();
+  const auth = useAuth();
   const [view, setView] = useState<ViewKey>('bandeja');
   const [overlay, setOverlay] = useState<Overlay>(null);
   const [filtros, setFiltrosState] = useState<FiltrosVista>({});
@@ -92,6 +94,10 @@ export default function App() {
 
   const acarrear = useCallback(
     (pre: PreAsiento) => {
+      if (!tienePermiso(auth.user.rol, 'contabilidad')) {
+        toast({ tone: 'error', title: 'Sin permisos', msg: `El rol ${auth.user.rol} es de solo lectura.` });
+        return;
+      }
       const res = acarrearPreAsiento(pre, DATOS.terceros);
       if (!res) {
         toast({
@@ -104,7 +110,7 @@ export default function App() {
       acciones.cambiarLineasPreAsiento(pre.id, res.lineas);
       toast({ tone: 'ok', title: 'Acarreo IA aplicado', msg: res.detalle });
     },
-    [toast],
+    [auth.user.rol, toast],
   );
 
   const onKey = useCallback(
@@ -245,9 +251,11 @@ export default function App() {
         periodo={estado.periodo}
         bloqueado={bloqueado}
         syncStatus={syncStatus}
+        usuario={auth.user}
         onEmpresas={() => setOverlay('empresas')}
         onPeriodo={() => setOverlay('periodos')}
         onAyuda={() => setOverlay('ayuda')}
+        onAuth={() => setOverlay('auth')}
       />
 
       <div className="body">
@@ -286,6 +294,7 @@ export default function App() {
       {overlay === 'empresas' && <EmpresasModal estado={estado} onClose={() => setOverlay(null)} />}
       {overlay === 'periodos' && <PeriodosModal estado={estado} onClose={() => setOverlay(null)} />}
       {overlay === 'ayuda' && <AyudaModal onClose={() => setOverlay(null)} />}
+      <AuthModal open={overlay === 'auth'} onClose={() => setOverlay(null)} toast={toast} />
 
       <ToastStack toasts={toasts} />
     </div>

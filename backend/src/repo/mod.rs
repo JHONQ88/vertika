@@ -1,11 +1,15 @@
 pub mod memory;
 pub mod postgres;
 
+use crate::auth::AuthUser;
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
-    ApproveResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest,
-    FrontendAuditoria, FrontendComprobante, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
-    LedgerAccount, PostEntryResult, ThirdParty, VoidEntryResult,
+    ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
+    ClosePeriodResult, CreateEntryRequest, CreatePucAccountRequest, FrontendAuditoria,
+    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
+    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
+    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use chrono::NaiveDate;
@@ -28,6 +32,13 @@ impl Store {
 
     pub fn postgres_enabled(&self) -> bool {
         matches!(self, Store::Postgres(_))
+    }
+
+    pub async fn authenticate(&self, email: &str, password: &str) -> Result<AuthUser, ApiError> {
+        match self {
+            Store::Memory(r) => r.authenticate(email, password).await,
+            Store::Postgres(r) => r.authenticate(email, password).await,
+        }
     }
 
     pub async fn bootstrap(&self) -> Result<Value, ApiError> {
@@ -144,6 +155,123 @@ impl Store {
         }
     }
 
+    pub async fn bill_period(
+        &self,
+        company_id: &str,
+        period: &str,
+        req: BillPeriodRequest,
+        actor: &str,
+    ) -> Result<BillPeriodResult, ApiError> {
+        match self {
+            Store::Memory(r) => r.bill_period(company_id, period, req, actor).await,
+            Store::Postgres(r) => r.bill_period(company_id, period, req, actor).await,
+        }
+    }
+
+    pub async fn open_next_period(
+        &self,
+        company_id: &str,
+        actor: &str,
+    ) -> Result<OpenNextPeriodResult, ApiError> {
+        match self {
+            Store::Memory(r) => r.open_next_period(company_id, actor).await,
+            Store::Postgres(r) => r.open_next_period(company_id, actor).await,
+        }
+    }
+
+    pub async fn create_unit(
+        &self,
+        company_id: &str,
+        req: UpsertUnitRequest,
+        actor: &str,
+    ) -> Result<FrontendUnidad, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_unit(company_id, req, actor).await,
+            Store::Postgres(r) => r.create_unit(company_id, req, actor).await,
+        }
+    }
+
+    pub async fn update_unit(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+        req: UpsertUnitRequest,
+        actor: &str,
+    ) -> Result<FrontendUnidad, ApiError> {
+        match self {
+            Store::Memory(r) => r.update_unit(company_id, unit_id, req, actor).await,
+            Store::Postgres(r) => r.update_unit(company_id, unit_id, req, actor).await,
+        }
+    }
+
+    pub async fn create_third_party(
+        &self,
+        company_id: &str,
+        req: UpsertThirdPartyRequest,
+        actor: &str,
+    ) -> Result<FrontendTercero, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_third_party(company_id, req, actor).await,
+            Store::Postgres(r) => r.create_third_party(company_id, req, actor).await,
+        }
+    }
+
+    pub async fn update_third_party(
+        &self,
+        company_id: &str,
+        tp_id: &str,
+        req: UpsertThirdPartyRequest,
+        actor: &str,
+    ) -> Result<FrontendTercero, ApiError> {
+        match self {
+            Store::Memory(r) => r.update_third_party(company_id, tp_id, req, actor).await,
+            Store::Postgres(r) => r.update_third_party(company_id, tp_id, req, actor).await,
+        }
+    }
+
+    pub async fn create_puc_account(
+        &self,
+        company_id: &str,
+        req: CreatePucAccountRequest,
+        actor: &str,
+    ) -> Result<LedgerAccount, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_puc_account(company_id, req, actor).await,
+            Store::Postgres(r) => r.create_puc_account(company_id, req, actor).await,
+        }
+    }
+
+    pub async fn update_rubro_budget(
+        &self,
+        company_id: &str,
+        rubro_id: &str,
+        presupuesto_anual: Decimal,
+        actor: &str,
+    ) -> Result<FrontendRubro, ApiError> {
+        match self {
+            Store::Memory(r) => {
+                r.update_rubro_budget(company_id, rubro_id, presupuesto_anual, actor)
+                    .await
+            }
+            Store::Postgres(r) => {
+                r.update_rubro_budget(company_id, rubro_id, presupuesto_anual, actor)
+                    .await
+            }
+        }
+    }
+
+    pub async fn update_company_settings(
+        &self,
+        company_id: &str,
+        req: UpdateCompanySettingsRequest,
+        actor: &str,
+    ) -> Result<FrontendCopropiedad, ApiError> {
+        match self {
+            Store::Memory(r) => r.update_company_settings(company_id, req, actor).await,
+            Store::Postgres(r) => r.update_company_settings(company_id, req, actor).await,
+        }
+    }
+
     pub async fn list_entries(
         &self,
         company_id: &str,
@@ -205,6 +333,31 @@ pub fn origin_from_agent(agente: &str) -> String {
 }
 
 pub fn last_day_of_period(period: &str) -> Result<String, ApiError> {
+    let (year, month) = parse_year_month(period)?;
+    let (next_y, next_m) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    let next_first = NaiveDate::from_ymd_opt(next_y, next_m, 1)
+        .ok_or_else(|| ApiError::BadRequest(format!("Periodo inválido '{period}'")))?;
+    let last = next_first
+        .pred_opt()
+        .ok_or_else(|| ApiError::BadRequest(format!("Periodo inválido '{period}'")))?;
+    Ok(last.format("%Y-%m-%d").to_string())
+}
+
+pub fn next_period_ym(period: &str) -> Result<String, ApiError> {
+    let (year, month) = parse_year_month(period)?;
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    Ok(format!("{ny:04}-{nm:02}"))
+}
+
+fn parse_year_month(period: &str) -> Result<(i32, u32), ApiError> {
     let parts: Vec<&str> = period.split('-').collect();
     if parts.len() != 2 {
         return Err(ApiError::BadRequest(format!(
@@ -220,17 +373,7 @@ pub fn last_day_of_period(period: &str) -> Result<String, ApiError> {
     if !(1..=12).contains(&month) {
         return Err(ApiError::BadRequest(format!("Mes inválido en periodo '{period}'")));
     }
-    let (next_y, next_m) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    let next_first = NaiveDate::from_ymd_opt(next_y, next_m, 1)
-        .ok_or_else(|| ApiError::BadRequest(format!("Periodo inválido '{period}'")))?;
-    let last = next_first
-        .pred_opt()
-        .ok_or_else(|| ApiError::BadRequest(format!("Periodo inválido '{period}'")))?;
-    Ok(last.format("%Y-%m-%d").to_string())
+    Ok((year, month))
 }
 
 pub fn validate_and_hash_frontend_lines(
@@ -323,6 +466,159 @@ pub fn compute_cartera_total(
             ledger::round_cop(raw)
         })
         .sum()
+}
+
+pub fn compute_unit_overdue_balances(
+    entries: &[FrontendComprobante],
+    company_id: &str,
+    before_period: &str,
+) -> HashMap<String, Decimal> {
+    let mut unit_net: HashMap<String, Decimal> = HashMap::new();
+    for c in entries {
+        if c.estado == "ANULADO"
+            || c.empresa_id != company_id
+            || c.periodo.as_str() >= before_period
+        {
+            continue;
+        }
+        for l in &c.lineas {
+            let Some(uid) = l.unidad_id.as_ref() else {
+                continue;
+            };
+            if !CARTERA_ACCOUNTS.contains(&l.cuenta.as_str()) {
+                continue;
+            }
+            let acc = unit_net.entry(uid.clone()).or_insert(Decimal::ZERO);
+            *acc += l.debito - l.credito;
+        }
+    }
+    unit_net
+        .into_iter()
+        .map(|(uid, raw)| (uid, ledger::round_cop(raw)))
+        .filter(|(_, bal)| *bal > Decimal::ZERO)
+        .collect()
+}
+
+pub fn build_billing_lines(
+    company: &FrontendCopropiedad,
+    units: &[FrontendUnidad],
+    overdue_balances: &HashMap<String, Decimal>,
+    incluir_mora: bool,
+) -> Result<(Vec<FrontendLinea>, usize), ApiError> {
+    if units.is_empty() {
+        return Err(ApiError::unprocessable(
+            "La copropiedad no tiene unidades inmobiliarias registradas.",
+        ));
+    }
+    let hundred = Decimal::from(100);
+    let twelve = Decimal::from(12);
+    let cuota_global = company.presupuesto_anual / twelve;
+
+    let mut lines = Vec::new();
+    let mut total_expensas = Decimal::ZERO;
+    let mut billed_units = 0usize;
+
+    for u in units {
+        let cuota = ledger::round_cop(cuota_global * u.coeficiente / hundred);
+        if cuota <= Decimal::ZERO {
+            continue;
+        }
+        let pagador_id = u
+            .arrendatario_id
+            .clone()
+            .unwrap_or_else(|| u.propietario_id.clone());
+        lines.push(FrontendLinea {
+            id: String::new(),
+            cuenta: "130505".into(),
+            descripcion: format!("Expensa ordinaria {} {}", u.torre, u.numero),
+            debito: cuota,
+            credito: Decimal::ZERO,
+            tercero_id: Some(pagador_id),
+            unidad_id: Some(u.id.clone()),
+            rubro_id: None,
+        });
+        total_expensas += cuota;
+        billed_units += 1;
+    }
+
+    if total_expensas <= Decimal::ZERO {
+        return Err(ApiError::unprocessable(
+            "El valor calculado de expensas es cero; revisa el presupuesto anual y coeficientes.",
+        ));
+    }
+
+    let fondo = ledger::round_cop(total_expensas * company.fondo_imprevistos_pct / hundred);
+    let ingreso_ordinario = total_expensas - fondo;
+
+    if ingreso_ordinario > Decimal::ZERO {
+        lines.push(FrontendLinea {
+            id: String::new(),
+            cuenta: "417005".into(),
+            descripcion: "Causación expensas ordinarias del mes".into(),
+            debito: Decimal::ZERO,
+            credito: ingreso_ordinario,
+            tercero_id: None,
+            unidad_id: None,
+            rubro_id: None,
+        });
+    }
+    if fondo > Decimal::ZERO {
+        lines.push(FrontendLinea {
+            id: String::new(),
+            cuenta: "281510".into(),
+            descripcion: "Apropiación fondo de imprevistos Ley 675".into(),
+            debito: Decimal::ZERO,
+            credito: fondo,
+            tercero_id: None,
+            unidad_id: None,
+            rubro_id: None,
+        });
+    }
+
+    if incluir_mora && company.tasa_mora_mensual > Decimal::ZERO {
+        let mut total_mora = Decimal::ZERO;
+        for u in units {
+            if u.cartera_congelada {
+                continue;
+            }
+            let Some(&saldo) = overdue_balances.get(&u.id) else {
+                continue;
+            };
+            let mora = ledger::round_cop(saldo * company.tasa_mora_mensual / hundred);
+            if mora <= Decimal::ZERO {
+                continue;
+            }
+            let pagador_id = u
+                .arrendatario_id
+                .clone()
+                .unwrap_or_else(|| u.propietario_id.clone());
+            lines.push(FrontendLinea {
+                id: String::new(),
+                cuenta: "130515".into(),
+                descripcion: format!("Interés de mora {} {}", u.torre, u.numero),
+                debito: mora,
+                credito: Decimal::ZERO,
+                tercero_id: Some(pagador_id),
+                unidad_id: Some(u.id.clone()),
+                rubro_id: None,
+            });
+            total_mora += mora;
+        }
+        if total_mora > Decimal::ZERO {
+            lines.push(FrontendLinea {
+                id: String::new(),
+                cuenta: "417030".into(),
+                descripcion: "Intereses de mora sobre cartera vencida".into(),
+                debito: Decimal::ZERO,
+                credito: total_mora,
+                tercero_id: None,
+                unidad_id: None,
+                rubro_id: None,
+            });
+        }
+    }
+
+    Ok((lines, billed_units))
 }
 
 pub fn compute_traslado_fondo(

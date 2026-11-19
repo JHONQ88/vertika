@@ -1,14 +1,18 @@
+use crate::auth::{self, AuthUser, CompanyRole, Role, DEMO_PASSWORD, DEMO_USERS};
 use crate::db::Db;
 use crate::domain::{
-    demo_puc, ledger, ApproveResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult,
-    CreateEntryRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
-    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, PostEntryResult, ThirdParty, VoidEntryResult,
+    demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
+    ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest, CreatePucAccountRequest,
+    FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp,
+    FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad,
+    LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty, UpdateCompanySettingsRequest,
+    UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
-    build_reversal_lines, closing_audit_detail, last_day_of_period, normalize_frontend_lines,
-    origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
+    build_billing_lines, build_reversal_lines, closing_audit_detail, compute_unit_overdue_balances,
+    last_day_of_period, next_period_ym, normalize_frontend_lines, origin_from_agent,
+    parse_seed_bundle, validate_and_hash_frontend_lines,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -42,12 +46,56 @@ impl PostgresRepo {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM copropiedades")
             .fetch_one(&self.db.pool)
             .await?;
-        if count > 0 {
+        let mut tx = self.db.pool.begin().await?;
+        if count == 0 {
+            Self::seed_relational_in_tx(&mut tx, &self.seed).await?;
+        } else {
+            Self::seed_demo_users_in_tx(&mut tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn seed_demo_users_in_tx(
+        tx: &mut Transaction<'_, Postgres>,
+    ) -> Result<(), ApiError> {
+        let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usuarios")
+            .fetch_one(&mut **tx)
+            .await?;
+        if user_count > 0 {
             return Ok(());
         }
-        let mut tx = self.db.pool.begin().await?;
-        Self::seed_relational_in_tx(&mut tx, &self.seed).await?;
-        tx.commit().await?;
+        let company_uuids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM copropiedades")
+            .fetch_all(&mut **tx)
+            .await?;
+        for u in DEMO_USERS {
+            let uid = Uuid::new_v4();
+            let pwd_hash = auth::hash_password(DEMO_PASSWORD, u.salt);
+            sqlx::query(
+                "INSERT INTO usuarios (id, email, nombre, password_hash, activo)
+                 VALUES ($1, $2, $3, $4, TRUE)
+                 ON CONFLICT (email) DO NOTHING",
+            )
+            .bind(uid)
+            .bind(u.email)
+            .bind(u.nombre)
+            .bind(pwd_hash)
+            .execute(&mut **tx)
+            .await?;
+
+            for &cid in &company_uuids {
+                sqlx::query(
+                    "INSERT INTO usuario_copropiedad_roles (usuario_id, copropiedad_id, rol)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT DO NOTHING",
+                )
+                .bind(uid)
+                .bind(cid)
+                .bind(u.rol.as_str())
+                .execute(&mut **tx)
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -365,6 +413,8 @@ impl PostgresRepo {
             .execute(&mut **tx)
             .await?;
 
+        Self::seed_demo_users_in_tx(tx).await?;
+
         Ok(())
     }
 
@@ -383,8 +433,14 @@ impl PostgresRepo {
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Copropiedad '{id_or_slug}' no encontrada.")))?;
 
+        let uuid: Uuid = row.try_get("id")?;
+        sqlx::query("SELECT set_config('app.current_copropiedad_id', $1, true)")
+            .bind(uuid.to_string())
+            .execute(&mut **tx)
+            .await?;
+
         Ok(CompanyRow {
-            uuid: row.try_get("id")?,
+            uuid,
             slug: row.try_get("slug")?,
             nombre_corto: row.try_get::<String, _>("nombre_corto")?,
             periodo_actual: row.try_get::<String, _>("periodo_actual")?.trim().to_string(),
@@ -710,7 +766,7 @@ impl PostgresRepo {
             "SELECT id, COALESCE(slug, id::text) AS slug, nit, razon_social,
                     COALESCE(nombre_corto, razon_social) AS nombre_corto, sigla, ciudad, direccion,
                     grupo_niif, COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
-                    tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10) AS dia_corte,
+                    tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
                     COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
                     COALESCE(llave_bre_b, '') AS llave_bre_b, presupuesto_anual,
                     periodo_actual, saldos_iniciales, escala, color
@@ -773,12 +829,13 @@ impl PostgresRepo {
         }
 
         let unit_rows = sqlx::query(
-            "SELECT id, COALESCE(clave_externa, id::text) AS ext_id, copropiedad_id,
-                    grupo_torre, numero_unidad, COALESCE(tipo, 'APARTAMENTO') AS tipo,
-                    COALESCE(area, 0) AS area, coeficiente,
-                    COALESCE(matricula_inmobiliaria, '') AS matricula, cartera_congelada
-               FROM unidades_inmobiliarias
-              ORDER BY created_at, grupo_torre, numero_unidad",
+            "SELECT u.id, COALESCE(u.clave_externa, u.id::text) AS ext_id, u.copropiedad_id,
+                    u.grupo_torre, u.numero_unidad, COALESCE(u.tipo, 'APARTAMENTO') AS tipo,
+                    COALESCE(u.area, 0) AS area, u.coeficiente,
+                    COALESCE(u.matricula_inmobiliaria, '') AS matricula, u.cartera_congelada
+               FROM unidades_inmobiliarias u
+               JOIN copropiedades co ON co.id = u.copropiedad_id
+              ORDER BY COALESCE(co.slug, co.id::text), u.grupo_torre, u.numero_unidad",
         )
         .fetch_all(&self.db.pool)
         .await?;
@@ -834,10 +891,11 @@ impl PostgresRepo {
         }
 
         let rub_rows = sqlx::query(
-            "SELECT COALESCE(clave_externa, id::text) AS ext_id, copropiedad_id,
-                    clave, nombre, COALESCE(centro_costo, '') AS centro, presupuesto_anual, cuenta_codigo
-               FROM rubros_presupuestales
-              ORDER BY copropiedad_id, clave",
+            "SELECT COALESCE(r.clave_externa, r.id::text) AS ext_id, r.copropiedad_id,
+                    r.clave, r.nombre, COALESCE(r.centro_costo, '') AS centro, r.presupuesto_anual, r.cuenta_codigo
+               FROM rubros_presupuestales r
+               JOIN copropiedades co ON co.id = r.copropiedad_id
+              ORDER BY COALESCE(co.slug, co.id::text), r.clave",
         )
         .fetch_all(&self.db.pool)
         .await?;
@@ -1004,10 +1062,10 @@ impl PostgresRepo {
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "TRUNCATE auditoria_eventos, periodos_cerrados, pre_asientos,
-                      movimientos_ledger, comprobantes_contables, rubros_presupuestales,
-                      vinculos_unidad_tercero, unidades_inmobiliarias, puc_esal_cuentas,
-                      terceros, copropiedades, app_estado",
+            "TRUNCATE usuario_copropiedad_roles, usuarios, auditoria_eventos, periodos_cerrados,
+                      pre_asientos, movimientos_ledger, comprobantes_contables,
+                      rubros_presupuestales, vinculos_unidad_tercero, tags_nfc, unidades_inmobiliarias,
+                      puc_esal_cuentas, terceros, copropiedades, app_estado CASCADE",
         )
         .execute(&mut *tx)
         .await?;
@@ -1728,6 +1786,798 @@ impl PostgresRepo {
             });
         }
         Ok(out)
+    }
+
+    pub async fn authenticate(&self, email: &str, password: &str) -> Result<AuthUser, ApiError> {
+        let user_row = sqlx::query(
+            "SELECT id, email, nombre, password_hash, activo
+               FROM usuarios
+              WHERE LOWER(email) = LOWER($1)",
+        )
+        .bind(email.trim())
+        .fetch_optional(&self.db.pool)
+        .await?
+        .ok_or_else(|| ApiError::Unauthorized("Credenciales inválidas.".into()))?;
+
+        let activo: bool = user_row.try_get("activo")?;
+        let stored_hash: String = user_row.try_get("password_hash")?;
+        if !activo || !auth::verify_password(password, &stored_hash) {
+            return Err(ApiError::Unauthorized("Credenciales inválidas.".into()));
+        }
+
+        let uid: Uuid = user_row.try_get("id")?;
+        let role_rows = sqlx::query(
+            "SELECT COALESCE(co.slug, co.id::text) AS slug, r.rol
+               FROM usuario_copropiedad_roles r
+               JOIN copropiedades co ON co.id = r.copropiedad_id
+              WHERE r.usuario_id = $1
+              ORDER BY slug",
+        )
+        .bind(uid)
+        .fetch_all(&self.db.pool)
+        .await?;
+
+        let mut roles = Vec::with_capacity(role_rows.len());
+        for rr in role_rows {
+            let slug: String = rr.try_get("slug")?;
+            let rol_str: String = rr.try_get("rol")?;
+            if let Some(role) = Role::from_str_code(&rol_str) {
+                roles.push(CompanyRole {
+                    company_id: slug,
+                    role,
+                });
+            }
+        }
+        let primary_role = roles
+            .first()
+            .map(|r| r.role)
+            .unwrap_or(Role::Consejo);
+
+        Ok(AuthUser {
+            id: uid.to_string(),
+            email: user_row.try_get("email")?,
+            nombre: user_row.try_get("nombre")?,
+            rol: primary_role,
+            roles,
+        })
+    }
+
+    pub async fn bill_period(
+        &self,
+        company_id: &str,
+        period: &str,
+        req: BillPeriodRequest,
+        actor: &str,
+    ) -> Result<BillPeriodResult, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company_row = Self::resolve_company_tx(&mut tx, company_id).await?;
+        Self::ensure_period_open_tx(&mut tx, &company_row, period).await?;
+
+        let already_billed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1
+                  FROM comprobantes_contables
+                 WHERE copropiedad_id = $1
+                   AND periodo = $2
+                   AND estado <> 'ANULADO'
+                   AND tipo_documento = 'CC'
+                   AND (origen_creacion = 'AGENTE_IA_LIQUIDADOR' OR descripcion LIKE 'Liquidación masiva de expensas%')
+             )",
+        )
+        .bind(company_row.uuid)
+        .bind(period)
+        .fetch_one(&mut *tx)
+        .await?;
+        if already_billed {
+            return Err(ApiError::Conflict(format!(
+                "El periodo {period} ya tiene causación masiva de expensas."
+            )));
+        }
+
+        let comp_meta = sqlx::query(
+            "SELECT presupuesto_anual, COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
+                    tasa_mora_mensual, nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                    sigla, ciudad, direccion, grupo_niif, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
+                    COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct, COALESCE(llave_bre_b, '') AS llave_bre_b,
+                    color
+               FROM copropiedades
+              WHERE id = $1",
+        )
+        .bind(company_row.uuid)
+        .fetch_one(&mut *tx)
+        .await?;
+        let saldos_map: HashMap<String, Decimal> =
+            serde_json::from_value(company_row.saldos_iniciales.clone()).unwrap_or_default();
+        let company_dto = FrontendCopropiedad {
+            id: company_row.slug.clone(),
+            nit: comp_meta.try_get("nit")?,
+            razon_social: comp_meta.try_get("razon_social")?,
+            nombre_corto: comp_meta.try_get("nombre_corto")?,
+            sigla: comp_meta.try_get("sigla")?,
+            ciudad: comp_meta.try_get("ciudad")?,
+            direccion: comp_meta.try_get("direccion")?,
+            grupo_niif: comp_meta.try_get("grupo_niif")?,
+            fondo_imprevistos_pct: comp_meta.try_get("fondo_pct")?,
+            tasa_mora_mensual: comp_meta.try_get("tasa_mora_mensual")?,
+            dia_corte_pronto_pago: comp_meta.try_get("dia_corte")?,
+            descuento_pronto_pago_pct: comp_meta.try_get("desc_pct")?,
+            llave_bre_b: comp_meta.try_get("llave_bre_b")?,
+            presupuesto_anual: comp_meta.try_get("presupuesto_anual")?,
+            periodo_actual: company_row.periodo_actual.clone(),
+            saldos_iniciales: saldos_map,
+            escala: company_row.escala,
+            color: comp_meta.try_get("color")?,
+        };
+
+        let unit_rows = sqlx::query(
+            "SELECT u.id, COALESCE(u.clave_externa, u.id::text) AS ext_id,
+                    u.grupo_torre, u.numero_unidad, COALESCE(u.tipo, 'APARTAMENTO') AS tipo,
+                    COALESCE(u.area, 0) AS area, u.coeficiente,
+                    COALESCE(u.matricula_inmobiliaria, '') AS matricula, u.cartera_congelada,
+                    COALESCE((
+                        SELECT COALESCE(t.clave_externa, t.id::text)
+                          FROM vinculos_unidad_tercero v
+                          JOIN terceros t ON t.id = v.tercero_id
+                         WHERE v.unidad_id = u.id AND v.rol_en_unidad = 'PROPIETARIO' AND v.activo = TRUE
+                         LIMIT 1
+                    ), '') AS prop_ext,
+                    (
+                        SELECT COALESCE(t.clave_externa, t.id::text)
+                          FROM vinculos_unidad_tercero v
+                          JOIN terceros t ON t.id = v.tercero_id
+                         WHERE v.unidad_id = u.id AND v.rol_en_unidad = 'ARRENDATARIO' AND v.activo = TRUE
+                         LIMIT 1
+                    ) AS arr_ext
+               FROM unidades_inmobiliarias u
+              WHERE u.copropiedad_id = $1
+              ORDER BY u.grupo_torre, u.numero_unidad",
+        )
+        .bind(company_row.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut units = Vec::with_capacity(unit_rows.len());
+        for ur in unit_rows {
+            units.push(FrontendUnidad {
+                id: ur.try_get("ext_id")?,
+                empresa_id: company_row.slug.clone(),
+                torre: ur.try_get("grupo_torre")?,
+                numero: ur.try_get("numero_unidad")?,
+                tipo: ur.try_get("tipo")?,
+                area: ur.try_get("area")?,
+                coeficiente: ur.try_get("coeficiente")?,
+                matricula: ur.try_get("matricula")?,
+                propietario_id: ur.try_get("prop_ext")?,
+                arrendatario_id: ur.try_get("arr_ext")?,
+                cartera_congelada: ur.try_get("cartera_congelada")?,
+            });
+        }
+
+        let overdue = if req.incluir_mora {
+            let prior_entries = self.load_entries_query(Some(company_row.uuid), None).await?;
+            compute_unit_overdue_balances(&prior_entries, &company_row.slug, period)
+        } else {
+            HashMap::new()
+        };
+
+        let (raw_lines, billed_units) =
+            build_billing_lines(&company_dto, &units, &overdue, req.incluir_mora)?;
+
+        let puc = Self::fetch_company_puc_tx(&mut tx, company_row.uuid).await?;
+        let fecha = format!("{period}-01");
+        let descripcion = req
+            .descripcion
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("Liquidación masiva de expensas {period}"));
+        let referencia = format!("EXP-{period}");
+
+        let comp = Self::insert_voucher_tx(
+            &mut tx,
+            &company_row,
+            "CC",
+            period,
+            &fecha,
+            "AGENTE_IA_LIQUIDADOR",
+            &descripcion,
+            Some(&referencia),
+            actor,
+            raw_lines,
+            &puc,
+        )
+        .await?;
+
+        let ev = Self::insert_audit_tx(
+            &mut tx,
+            &company_row,
+            actor,
+            "Causó expensas del periodo",
+            &format!(
+                "{}-{} · {billed_units} unidades ({period})",
+                comp.tipo, comp.consecutivo
+            ),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(BillPeriodResult {
+            comprobante: comp,
+            auditoria: ev,
+            unidades_facturadas: billed_units,
+        })
+    }
+
+    pub async fn open_next_period(
+        &self,
+        company_id: &str,
+        actor: &str,
+    ) -> Result<OpenNextPeriodResult, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let current = company.periodo_actual.clone();
+
+        let is_closed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM periodos_cerrados WHERE copropiedad_id = $1 AND periodo = $2)",
+        )
+        .bind(company.uuid)
+        .bind(&current)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !is_closed {
+            return Err(ApiError::Conflict(format!(
+                "Debes ejecutar el cierre del periodo {current} antes de abrir el siguiente."
+            )));
+        }
+
+        let next = next_period_ym(&current)?;
+        sqlx::query("UPDATE copropiedades SET periodo_actual = $2 WHERE id = $1")
+            .bind(company.uuid)
+            .bind(&next)
+            .execute(&mut *tx)
+            .await?;
+
+        let ev = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Abrió nuevo periodo",
+            &format!("{current} → {next}"),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(OpenNextPeriodResult {
+            empresa_id: company.slug,
+            periodo_anterior: current,
+            periodo_nuevo: next,
+            auditoria: ev,
+        })
+    }
+
+    pub async fn create_unit(
+        &self,
+        company_id: &str,
+        req: UpsertUnitRequest,
+        actor: &str,
+    ) -> Result<FrontendUnidad, ApiError> {
+        if req.coeficiente <= Decimal::ZERO {
+            return Err(ApiError::unprocessable("El coeficiente debe ser mayor a cero."));
+        }
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let prop_uuid = Self::resolve_optional_fk(&mut tx, "terceros", Some(&req.propietario_id))
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("El propietario indicado no existe.".into()))?;
+        let arr_uuid = match req.arrendatario_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(arr) => Some(
+                Self::resolve_optional_fk(&mut tx, "terceros", Some(arr))
+                    .await?
+                    .ok_or_else(|| ApiError::BadRequest("El arrendatario indicado no existe.".into()))?,
+            ),
+            None => None,
+        };
+
+        let uid = Uuid::new_v4();
+        let ext_id = format!("u-{}", uid.simple());
+        sqlx::query(
+            "INSERT INTO unidades_inmobiliarias (
+                id, clave_externa, copropiedad_id, grupo_torre, numero_unidad, tipo,
+                area, matricula_inmobiliaria, coeficiente, esta_arrendado, cartera_congelada
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        )
+        .bind(uid)
+        .bind(&ext_id)
+        .bind(company.uuid)
+        .bind(req.torre.trim())
+        .bind(req.numero.trim())
+        .bind(&req.tipo)
+        .bind(req.area)
+        .bind(req.matricula.trim())
+        .bind(req.coeficiente)
+        .bind(arr_uuid.is_some())
+        .bind(req.cartera_congelada)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO vinculos_unidad_tercero (unidad_id, tercero_id, rol_en_unidad)
+             VALUES ($1, $2, 'PROPIETARIO')",
+        )
+        .bind(uid)
+        .bind(prop_uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        if let Some(arr_id) = arr_uuid {
+            sqlx::query(
+                "INSERT INTO vinculos_unidad_tercero (unidad_id, tercero_id, rol_en_unidad)
+                 VALUES ($1, $2, 'ARRENDATARIO')",
+            )
+            .bind(uid)
+            .bind(arr_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Creó unidad",
+            &format!("{} {}", req.torre.trim(), req.numero.trim()),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(FrontendUnidad {
+            id: ext_id,
+            empresa_id: company.slug,
+            torre: req.torre.trim().into(),
+            numero: req.numero.trim().into(),
+            tipo: req.tipo,
+            area: req.area,
+            coeficiente: req.coeficiente,
+            matricula: req.matricula.trim().into(),
+            propietario_id: req.propietario_id,
+            arrendatario_id: req.arrendatario_id.filter(|s| !s.trim().is_empty()),
+            cartera_congelada: req.cartera_congelada,
+        })
+    }
+
+    pub async fn update_unit(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+        req: UpsertUnitRequest,
+        actor: &str,
+    ) -> Result<FrontendUnidad, ApiError> {
+        if req.coeficiente <= Decimal::ZERO {
+            return Err(ApiError::unprocessable("El coeficiente debe ser mayor a cero."));
+        }
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let unit_row = sqlx::query(
+            "SELECT id, COALESCE(clave_externa, id::text) AS ext_id
+               FROM unidades_inmobiliarias
+              WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)",
+        )
+        .bind(company.uuid)
+        .bind(unit_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Unidad '{unit_id}' no encontrada.")))?;
+        let uid: Uuid = unit_row.try_get("id")?;
+        let ext_id: String = unit_row.try_get("ext_id")?;
+
+        let prop_uuid = Self::resolve_optional_fk(&mut tx, "terceros", Some(&req.propietario_id))
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("El propietario indicado no existe.".into()))?;
+        let arr_uuid = match req.arrendatario_id.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(arr) => Some(
+                Self::resolve_optional_fk(&mut tx, "terceros", Some(arr))
+                    .await?
+                    .ok_or_else(|| ApiError::BadRequest("El arrendatario indicado no existe.".into()))?,
+            ),
+            None => None,
+        };
+
+        sqlx::query(
+            "UPDATE unidades_inmobiliarias
+                SET grupo_torre = $2, numero_unidad = $3, tipo = $4, area = $5,
+                    matricula_inmobiliaria = $6, coeficiente = $7, esta_arrendado = $8,
+                    cartera_congelada = $9
+              WHERE id = $1",
+        )
+        .bind(uid)
+        .bind(req.torre.trim())
+        .bind(req.numero.trim())
+        .bind(&req.tipo)
+        .bind(req.area)
+        .bind(req.matricula.trim())
+        .bind(req.coeficiente)
+        .bind(arr_uuid.is_some())
+        .bind(req.cartera_congelada)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM vinculos_unidad_tercero WHERE unidad_id = $1")
+            .bind(uid)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO vinculos_unidad_tercero (unidad_id, tercero_id, rol_en_unidad)
+             VALUES ($1, $2, 'PROPIETARIO')",
+        )
+        .bind(uid)
+        .bind(prop_uuid)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(arr_id) = arr_uuid {
+            sqlx::query(
+                "INSERT INTO vinculos_unidad_tercero (unidad_id, tercero_id, rol_en_unidad)
+                 VALUES ($1, $2, 'ARRENDATARIO')",
+            )
+            .bind(uid)
+            .bind(arr_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Actualizó unidad",
+            &format!("{} {}", req.torre.trim(), req.numero.trim()),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(FrontendUnidad {
+            id: ext_id,
+            empresa_id: company.slug,
+            torre: req.torre.trim().into(),
+            numero: req.numero.trim().into(),
+            tipo: req.tipo,
+            area: req.area,
+            coeficiente: req.coeficiente,
+            matricula: req.matricula.trim().into(),
+            propietario_id: req.propietario_id,
+            arrendatario_id: req.arrendatario_id.filter(|s| !s.trim().is_empty()),
+            cartera_congelada: req.cartera_congelada,
+        })
+    }
+
+    pub async fn create_third_party(
+        &self,
+        company_id: &str,
+        req: UpsertThirdPartyRequest,
+        actor: &str,
+    ) -> Result<FrontendTercero, ApiError> {
+        if req.nombre.trim().is_empty() || req.documento.trim().is_empty() {
+            return Err(ApiError::unprocessable("Nombre y documento del tercero son obligatorios."));
+        }
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let tid = Uuid::new_v4();
+        let ext_id = format!("tp-{}", tid.simple());
+        let dv = req.dv.filter(|s| !s.trim().is_empty());
+
+        sqlx::query(
+            "INSERT INTO terceros (
+                id, clave_externa, copropiedad_id, nombre, tipo, documento, dv,
+                email, telefono, ciudad, retefuente_pct, reteica_pct, reteiva_pct,
+                regimen_especial, no_obligado
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+        )
+        .bind(tid)
+        .bind(&ext_id)
+        .bind(company.uuid)
+        .bind(req.nombre.trim())
+        .bind(&req.tipo)
+        .bind(req.documento.trim())
+        .bind(&dv)
+        .bind(req.email.trim())
+        .bind(req.telefono.trim())
+        .bind(req.ciudad.trim())
+        .bind(req.retefuente_pct)
+        .bind(req.reteica_pct)
+        .bind(req.reteiva_pct)
+        .bind(req.regimen_especial.unwrap_or(false))
+        .bind(req.no_obligado)
+        .execute(&mut *tx)
+        .await?;
+
+        let _ = Self::insert_audit_tx(&mut tx, &company, actor, "Creó tercero", req.nombre.trim())
+            .await?;
+        tx.commit().await?;
+
+        Ok(FrontendTercero {
+            id: ext_id,
+            empresa_id: Some(company.slug),
+            nombre: req.nombre.trim().into(),
+            tipo: req.tipo,
+            documento: req.documento.trim().into(),
+            dv,
+            email: req.email.trim().into(),
+            telefono: req.telefono.trim().into(),
+            ciudad: req.ciudad.trim().into(),
+            retefuente_pct: req.retefuente_pct,
+            reteica_pct: req.reteica_pct,
+            reteiva_pct: req.reteiva_pct,
+            no_obligado: req.no_obligado,
+            regimen_especial: req.regimen_especial,
+        })
+    }
+
+    pub async fn update_third_party(
+        &self,
+        company_id: &str,
+        tp_id: &str,
+        req: UpsertThirdPartyRequest,
+        actor: &str,
+    ) -> Result<FrontendTercero, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let tp_row = sqlx::query(
+            "SELECT id, COALESCE(clave_externa, id::text) AS ext_id, copropiedad_id
+               FROM terceros
+              WHERE (clave_externa = $1 OR id::text = $1)
+                AND (copropiedad_id IS NULL OR copropiedad_id = $2)",
+        )
+        .bind(tp_id)
+        .bind(company.uuid)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Tercero '{tp_id}' no encontrado.")))?;
+
+        let tid: Uuid = tp_row.try_get("id")?;
+        let ext_id: String = tp_row.try_get("ext_id")?;
+        let cid: Option<Uuid> = tp_row.try_get("copropiedad_id")?;
+        let dv = req.dv.filter(|s| !s.trim().is_empty());
+
+        sqlx::query(
+            "UPDATE terceros
+                SET nombre = $2, tipo = $3, documento = $4, dv = $5, email = $6,
+                    telefono = $7, ciudad = $8, retefuente_pct = $9, reteica_pct = $10,
+                    reteiva_pct = $11, regimen_especial = $12, no_obligado = $13
+              WHERE id = $1",
+        )
+        .bind(tid)
+        .bind(req.nombre.trim())
+        .bind(&req.tipo)
+        .bind(req.documento.trim())
+        .bind(&dv)
+        .bind(req.email.trim())
+        .bind(req.telefono.trim())
+        .bind(req.ciudad.trim())
+        .bind(req.retefuente_pct)
+        .bind(req.reteica_pct)
+        .bind(req.reteiva_pct)
+        .bind(req.regimen_especial.unwrap_or(false))
+        .bind(req.no_obligado)
+        .execute(&mut *tx)
+        .await?;
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Actualizó tercero",
+            req.nombre.trim(),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(FrontendTercero {
+            id: ext_id,
+            empresa_id: cid.map(|_| company.slug),
+            nombre: req.nombre.trim().into(),
+            tipo: req.tipo,
+            documento: req.documento.trim().into(),
+            dv,
+            email: req.email.trim().into(),
+            telefono: req.telefono.trim().into(),
+            ciudad: req.ciudad.trim().into(),
+            retefuente_pct: req.retefuente_pct,
+            reteica_pct: req.reteica_pct,
+            reteiva_pct: req.reteiva_pct,
+            no_obligado: req.no_obligado,
+            regimen_especial: req.regimen_especial,
+        })
+    }
+
+    pub async fn create_puc_account(
+        &self,
+        company_id: &str,
+        req: CreatePucAccountRequest,
+        actor: &str,
+    ) -> Result<LedgerAccount, ApiError> {
+        let code = req.codigo.trim().to_string();
+        if code.is_empty() || req.nombre.trim().is_empty() {
+            return Err(ApiError::unprocessable("Código y nombre de cuenta son obligatorios."));
+        }
+        if !["ACTIVO", "PASIVO", "PATRIMONIO", "INGRESO", "GASTO"].contains(&req.tipo.as_str()) {
+            return Err(ApiError::unprocessable("Tipo de cuenta PUC inválido."));
+        }
+        if !["D", "C"].contains(&req.naturaleza.as_str()) {
+            return Err(ApiError::unprocessable("La naturaleza debe ser D o C."));
+        }
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let rubro_key = req.rubro_key.filter(|s| !s.trim().is_empty());
+        let nota = req.nota.filter(|s| !s.trim().is_empty());
+        let is_cash = code.starts_with("11");
+
+        sqlx::query(
+            "INSERT INTO puc_esal_cuentas (
+                copropiedad_id, codigo_cuenta, nombre_cuenta, tipo_cuenta, naturaleza,
+                rubro_presupuesto_key, requiere_tercero, requiere_unidad, es_efectivo, restringida, nota
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,FALSE,$10)",
+        )
+        .bind(company.uuid)
+        .bind(&code)
+        .bind(req.nombre.trim())
+        .bind(&req.tipo)
+        .bind(&req.naturaleza)
+        .bind(&rubro_key)
+        .bind(req.requiere_tercero)
+        .bind(req.requiere_unidad)
+        .bind(is_cash)
+        .bind(&nota)
+        .execute(&mut *tx)
+        .await?;
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Creó cuenta PUC",
+            &format!("{code} · {}", req.nombre.trim()),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(LedgerAccount {
+            code,
+            name: req.nombre.trim().into(),
+            account_type: req.tipo,
+            nature: req.naturaleza,
+            rubric_key: rubro_key,
+            requires_third_party: req.requiere_tercero,
+            requires_unit: req.requiere_unidad,
+            is_cash,
+            restricted: false,
+            note: nota,
+        })
+    }
+
+    pub async fn update_rubro_budget(
+        &self,
+        company_id: &str,
+        rubro_id: &str,
+        presupuesto_anual: Decimal,
+        actor: &str,
+    ) -> Result<FrontendRubro, ApiError> {
+        if presupuesto_anual < Decimal::ZERO {
+            return Err(ApiError::unprocessable("El presupuesto anual no puede ser negativo."));
+        }
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let row = sqlx::query(
+            "UPDATE rubros_presupuestales
+                SET presupuesto_anual = $3
+              WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+             RETURNING COALESCE(clave_externa, id::text) AS ext_id, clave, nombre,
+                       COALESCE(centro_costo, '') AS centro, presupuesto_anual, cuenta_codigo",
+        )
+        .bind(company.uuid)
+        .bind(rubro_id)
+        .bind(presupuesto_anual)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Rubro '{rubro_id}' no encontrado.")))?;
+
+        sqlx::query(
+            "UPDATE copropiedades
+                SET presupuesto_anual = (
+                    SELECT COALESCE(SUM(presupuesto_anual), 0)
+                      FROM rubros_presupuestales
+                     WHERE copropiedad_id = $1
+                )
+              WHERE id = $1",
+        )
+        .bind(company.uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        let updated = FrontendRubro {
+            id: row.try_get("ext_id")?,
+            empresa_id: company.slug.clone(),
+            key: row.try_get("clave")?,
+            nombre: row.try_get("nombre")?,
+            centro: row.try_get("centro")?,
+            presupuesto_anual: row.try_get("presupuesto_anual")?,
+            cuenta: row.try_get("cuenta_codigo")?,
+        };
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Actualizó presupuesto",
+            &format!("{}: {}", updated.nombre, updated.presupuesto_anual),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(updated)
+    }
+
+    pub async fn update_company_settings(
+        &self,
+        company_id: &str,
+        req: UpdateCompanySettingsRequest,
+        actor: &str,
+    ) -> Result<FrontendCopropiedad, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let r = sqlx::query(
+            "UPDATE copropiedades
+                SET razon_social = COALESCE(NULLIF(TRIM($2), ''), razon_social),
+                    direccion = COALESCE(NULLIF(TRIM($3), ''), direccion),
+                    porcentaje_fondo_imprevistos = COALESCE($4, porcentaje_fondo_imprevistos),
+                    tasa_mora_mensual = COALESCE($5, tasa_mora_mensual),
+                    dia_corte_pronto_pago = COALESCE($6, dia_corte_pronto_pago),
+                    descuento_pronto_pago_pct = COALESCE($7, descuento_pronto_pago_pct),
+                    llave_bre_b = COALESCE($8, llave_bre_b)
+              WHERE id = $1
+             RETURNING nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                       sigla, ciudad, direccion, grupo_niif,
+                       COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
+                       tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
+                       COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
+                       COALESCE(llave_bre_b, '') AS llave_bre_b,
+                       presupuesto_anual, periodo_actual, saldos_iniciales, escala, color",
+        )
+        .bind(company.uuid)
+        .bind(req.razon_social)
+        .bind(req.direccion)
+        .bind(req.fondo_imprevistos_pct)
+        .bind(req.tasa_mora_mensual)
+        .bind(req.dia_corte_pronto_pago)
+        .bind(req.descuento_pronto_pago_pct)
+        .bind(req.llave_bre_b)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let razon: String = r.try_get("razon_social")?;
+        let _ = Self::insert_audit_tx(&mut tx, &company, actor, "Actualizó parámetros", &razon)
+            .await?;
+        tx.commit().await?;
+
+        let saldos: HashMap<String, Decimal> =
+            serde_json::from_value(r.try_get("saldos_iniciales")?).unwrap_or_default();
+        Ok(FrontendCopropiedad {
+            id: company.slug,
+            nit: r.try_get("nit")?,
+            razon_social: razon,
+            nombre_corto: r.try_get("nombre_corto")?,
+            sigla: r.try_get("sigla")?,
+            ciudad: r.try_get("ciudad")?,
+            direccion: r.try_get("direccion")?,
+            grupo_niif: r.try_get("grupo_niif")?,
+            fondo_imprevistos_pct: r.try_get("fondo_pct")?,
+            tasa_mora_mensual: r.try_get("tasa_mora_mensual")?,
+            dia_corte_pronto_pago: r.try_get("dia_corte")?,
+            descuento_pronto_pago_pct: r.try_get("desc_pct")?,
+            llave_bre_b: r.try_get("llave_bre_b")?,
+            presupuesto_anual: r.try_get("presupuesto_anual")?,
+            periodo_actual: r.try_get::<String, _>("periodo_actual")?.trim().to_string(),
+            saldos_iniciales: saldos,
+            escala: r.try_get("escala")?,
+            color: r.try_get("color")?,
+        })
     }
 }
 

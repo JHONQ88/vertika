@@ -1,18 +1,24 @@
 import { useMemo, useState } from 'react';
 import type { Comprobante, TipoComprobante } from '../domain/types';
 import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
-import { acciones, DATOS, esPeriodoBloqueado } from '../store';
+import { acciones, DATOS, esPeriodoBloqueado, rubrosDe, tienePermiso, unidadesDe, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Empty, ViewHeader } from '../components/ui';
 import { DetalleComprobante } from '../components/DetalleComprobante';
+import { NuevoComprobanteModal } from '../components/NuevoComprobanteModal';
 
 const TIPOS: Array<TipoComprobante | 'TODOS'> = ['TODOS', 'CC', 'RC', 'CE', 'NC', 'DS'];
 
 export function Comprobantes(props: VistaProps) {
   const { empresa, estado, filtros, setFiltros, toast } = props;
+  const auth = useAuth();
   const [tipo, setTipo] = useState<TipoComprobante | 'TODOS'>('TODOS');
   const [q, setQ] = useState('');
   const [detalleSeleccionado, setDetalleSeleccionado] = useState<Comprobante | null>(null);
+  const [nuevoOpen, setNuevoOpen] = useState(false);
+
+  const puedeContabilizar = tienePermiso(auth.user.rol, 'contabilidad');
+  const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
 
   const lista = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -72,9 +78,27 @@ export function Comprobantes(props: VistaProps) {
         title="Comprobantes"
         subtitle={`${empresa.nombreCorto} · ${lista.length} documentos · ${fmtMoney(total)}`}
         actions={
-          <Btn size="sm" icon="download" onClick={exportar} disabled={lista.length === 0}>
-            Exportar CSV
-          </Btn>
+          <>
+            <Btn
+              size="sm"
+              variant="primary"
+              icon="plus"
+              onClick={() => setNuevoOpen(true)}
+              disabled={bloqueado || !puedeContabilizar}
+              title={
+                !puedeContabilizar
+                  ? 'Solo el contador puede asentar comprobantes'
+                  : bloqueado
+                    ? 'Periodo cerrado o sin abrir'
+                    : 'Crear comprobante manual'
+              }
+            >
+              Nuevo comprobante
+            </Btn>
+            <Btn size="sm" icon="download" onClick={exportar} disabled={lista.length === 0}>
+              Exportar CSV
+            </Btn>
+          </>
         }
       />
 
@@ -138,13 +162,24 @@ export function Comprobantes(props: VistaProps) {
       <DetalleComprobante
         comprobante={detalle}
         terceros={DATOS.terceros}
-        unidades={DATOS.units.filter((u) => u.empresaId === empresa.id)}
-        puedeAnular={detalle ? !esPeriodoBloqueado(estado, detalle.periodo) : false}
+        unidades={unidadesDe(estado)}
+        puedeAnular={detalle ? !esPeriodoBloqueado(estado, detalle.periodo) && puedeContabilizar : false}
         onAnular={anular}
         onClose={() => {
           setDetalleSeleccionado(null);
           if (filtros.comprobanteId) setFiltros({ comprobanteId: undefined });
         }}
+      />
+
+      <NuevoComprobanteModal
+        open={nuevoOpen}
+        empresa={empresa}
+        periodo={estado.periodo}
+        terceros={DATOS.terceros.filter((t) => !t.empresaId || t.empresaId === empresa.id)}
+        unidades={unidadesDe(estado)}
+        rubros={rubrosDe(estado)}
+        onClose={() => setNuevoOpen(false)}
+        toast={toast}
       />
     </div>
   );

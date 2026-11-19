@@ -1,17 +1,25 @@
 import { useMemo, useState } from 'react';
 import { cartera } from '../domain/engine';
 import { cuotaMensual } from '../domain/seed';
+import { descargarArchivo, generarPazYSalvoHTML } from '../domain/reports';
 import { fmtCoef, fmtMoney, fmtPeriodo } from '../domain/format';
-import { DATOS } from '../store';
+import { acciones, DATOS, esPeriodoBloqueado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
-import { Badge, Btn, Chip, Empty, Stat, ViewHeader } from '../components/ui';
+import { Badge, Btn, Chip, Empty, Modal, Stat, Toggle, ViewHeader } from '../components/ui';
 
 const norm = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 export function Cartera(props: VistaProps) {
   const { empresa, estado, filtros, setFiltros, modo, toast } = props;
+  const auth = useAuth();
   const [q, setQ] = useState('');
+  const [modalCausar, setModalCausar] = useState(false);
+  const [incluirMora, setIncluirMora] = useState(true);
+  const [causando, setCausando] = useState(false);
+
+  const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
+  const puedeCausar = tienePermiso(auth.user.rol, 'maestros');
 
   const filas = useMemo(
     () => cartera(estado.comprobantes, empresa, DATOS.units.filter((u) => u.empresaId === empresa.id), DATOS.terceros, estado.periodo),
@@ -76,14 +84,37 @@ export function Cartera(props: VistaProps) {
     const csv = [encabezado, ...lineas]
       .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
       .join('\n');
-    const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `cartera-${empresa.id}-${estado.periodo}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    descargarArchivo(`cartera-${empresa.id}-${estado.periodo}.csv`, `﻿${csv}`, 'text/csv;charset=utf-8');
     toast({ tone: 'ok', title: 'Cartera exportada', msg: `${filtradas.length} unidades` });
+  };
+
+  const descargarPazYSalvo = (f: (typeof filas)[number]) => {
+    const html = generarPazYSalvoHTML(empresa, f, estado.periodo);
+    descargarArchivo(
+      `paz-y-salvo-${empresa.id}-${f.unidad.torre.replace(/\s+/g, '')}-${f.unidad.numero}.html`,
+      html,
+      'text/html;charset=utf-8',
+    );
+    toast({
+      tone: 'ok',
+      title: 'Paz y salvo generado',
+      msg: `${f.unidad.torre} ${f.unidad.numero} · Ley 675`,
+    });
+  };
+
+  const ejecutarCausacion = async () => {
+    setCausando(true);
+    try {
+      const res = await acciones.causarExpensasMes(estado.periodo, incluirMora);
+      if (res.ok) {
+        toast({ tone: 'ok', title: 'Expensas causadas', msg: res.detalle });
+        setModalCausar(false);
+      } else {
+        toast({ tone: 'error', title: 'No se pudo causar', msg: res.error });
+      }
+    } finally {
+      setCausando(false);
+    }
   };
 
   return (
@@ -95,6 +126,22 @@ export function Cartera(props: VistaProps) {
         actions={
           <>
             <Badge tone={modo === 0 ? 'info' : 'neutral'}>{modo === 0 ? 'Vista: unidades' : 'Vista: antigüedad'}</Badge>
+            <Btn
+              size="sm"
+              variant="primary"
+              icon="spark"
+              onClick={() => setModalCausar(true)}
+              disabled={bloqueado || !puedeCausar}
+              title={
+                !puedeCausar
+                  ? 'Requiere rol Contador o Administrador'
+                  : bloqueado
+                    ? 'Periodo cerrado o sin abrir'
+                    : 'Liquidar expensas ordinarias del mes'
+              }
+            >
+              Causar expensas del mes
+            </Btn>
             <Btn size="sm" icon="download" onClick={exportar} disabled={filtradas.length === 0}>
               Exportar CSV
             </Btn>
@@ -138,6 +185,7 @@ export function Cartera(props: VistaProps) {
                 <th className="num">Saldo</th>
                 <th>Antigüedad</th>
                 <th>Estado</th>
+                <th>Certificado</th>
               </tr>
             </thead>
             <tbody>
@@ -174,6 +222,15 @@ export function Cartera(props: VistaProps) {
                     {f.estado === 'EN_MORA' && <Badge tone="error">En mora</Badge>}
                     {f.estado === 'POR_VENCER' && <Badge tone="warn">Por vencer</Badge>}
                     {f.estado === 'CONGELADA' && <Badge tone="info">Congelada</Badge>}
+                  </td>
+                  <td>
+                    {f.estado === 'AL_DIA' ? (
+                      <Btn size="xs" icon="download" onClick={() => descargarPazYSalvo(f)}>
+                        Paz y salvo
+                      </Btn>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                 </tr>
               ))}
@@ -214,6 +271,37 @@ export function Cartera(props: VistaProps) {
           </table>
         </div>
       )}
+
+      <Modal
+        open={modalCausar}
+        onClose={() => setModalCausar(false)}
+        title="Causación masiva de expensas"
+        subtitle={`${empresa.nombreCorto} · ${fmtPeriodo(estado.periodo)}`}
+        width={520}
+      >
+        <p className="card-note" style={{ marginTop: 0 }}>
+          Se liquidará el presupuesto mensual ({fmtMoney(empresa.presupuestoAnual / 12)}) distribuido por
+          coeficiente entre {filas.length} unidades, apropiando {empresa.fondoImprevistosPct}% al fondo de imprevistos
+          (cuenta <span className="mono">281510</span>).
+        </p>
+        <div className="checklist" style={{ marginBottom: 14 }}>
+          <div className="check-item">
+            <Toggle checked={incluirMora} onChange={setIncluirMora} />
+            <div>
+              <strong>Liquidar intereses de mora ({empresa.tasaMoraMensual}% mensual)</strong>
+              <small>Aplica a unidades con saldo vencido anterior cuya cartera no esté congelada.</small>
+            </div>
+          </div>
+        </div>
+        <div className="cierre-acciones" style={{ justifyContent: 'flex-end' }}>
+          <Btn variant="ghost" onClick={() => setModalCausar(false)}>
+            Cancelar
+          </Btn>
+          <Btn variant="primary" icon="check" onClick={() => void ejecutarCausacion()} disabled={causando}>
+            {causando ? 'Causando…' : 'Confirmar causación (CC)'}
+          </Btn>
+        </div>
+      </Modal>
     </div>
   );
 }

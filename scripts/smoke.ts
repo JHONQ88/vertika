@@ -16,6 +16,14 @@ import {
   resumenPeriodo,
   validarAsiento,
 } from '../src/domain/engine';
+import {
+  certificadosRetencion,
+  estadoResultados,
+  estadoSituacionFinanciera,
+  generarCertificadosRetencionHTML,
+  generarMediosMagneticosXML,
+  generarPazYSalvoHTML,
+} from '../src/domain/reports';
 
 const datos = buildSeed();
 let fallos = 0;
@@ -297,6 +305,49 @@ check(
       cartSaldada.diasVencido === 0,
   );
 }
+
+console.log('\n8. Reportes ESAL, DIAN y Paz y Salvo');
+for (const emp of datos.companies) {
+  const esf = estadoSituacionFinanciera(datos.comprobantes, emp, '2026-11');
+  check(
+    `${emp.nombreCorto} · ESF cuadra (Activo = Pasivo + Patrimonio)`,
+    esf.cuadra && Number.isFinite(esf.totalActivos),
+    `A=${esf.totalActivos} P+Pat=${esf.totalPasivos + esf.totalPatrimonio}`,
+  );
+  const er = estadoResultados(datos.comprobantes, emp, '2026-11');
+  check(
+    `${emp.nombreCorto} · Estado de resultados consistente`,
+    Number.isFinite(er.totalIngresos) &&
+      Number.isFinite(er.totalGastos) &&
+      Math.abs(er.excedente - (er.totalIngresos - er.totalGastos)) < 0.01,
+  );
+}
+const emp0 = datos.companies[0];
+const xml1001 = generarMediosMagneticosXML(datos.comprobantes, emp0, datos.terceros, '2026');
+const nit0 = emp0.nit.replace(/[^0-9]/g, '');
+check(
+  'DIAN Formato 1001 XML incluye estructura <mas> y NIT informante',
+  xml1001.includes('<mas') && xml1001.includes('<Formato>1001</Formato>') && xml1001.includes(nit0),
+);
+const certRows = certificadosRetencion(datos.comprobantes, emp0, datos.terceros, '2026');
+const certHtml = generarCertificadosRetencionHTML(emp0, '2026', certRows);
+check(
+  'Certificado consolidado de retenciones HTML generado',
+  certHtml.includes('<!DOCTYPE html>') && certHtml.includes('Certificado Anual Consolidado de Retenciones'),
+);
+const carteraEmp0 = cartera(
+  datos.comprobantes,
+  emp0,
+  datos.units.filter((u) => u.empresaId === emp0.id),
+  datos.terceros,
+  '2026-11',
+);
+const filaPazYSalvo = carteraEmp0.find((f) => f.estado === 'AL_DIA') ?? carteraEmp0[0];
+const pazHtml = generarPazYSalvoHTML(emp0, filaPazYSalvo, '2026-11');
+check(
+  'Paz y Salvo Ley 675 HTML generado',
+  pazHtml.includes('Certificado de Paz y Salvo') && pazHtml.includes('Ley 675 de 2001'),
+);
 
 console.log(
   fallos === 0

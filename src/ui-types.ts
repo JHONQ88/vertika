@@ -43,7 +43,7 @@ export interface VistaProps {
 export const MODO_COUNT: Record<ViewKey, number> = {
   bandeja: 1,
   libro: 2,
-  balance: 2,
+  balance: 3,
   presupuesto: 1,
   cartera: 2,
   comprobantes: 1,

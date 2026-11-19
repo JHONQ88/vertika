@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 #[derive(Debug)]
 pub enum ApiError {
     BadRequest(String),
+    Unauthorized(String),
+    Forbidden(String),
     NotFound(String),
     Conflict(String),
     Unprocessable {
@@ -37,6 +39,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message, details) = match self {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", m, None),
+            ApiError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", m, None),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, "FORBIDDEN", m, None),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, "NOT_FOUND", m, None),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, "CONFLICT", m, None),
             ApiError::Unprocessable { message, details } => {
@@ -56,6 +60,18 @@ impl IntoResponse for ApiError {
     }
 }
 
+fn internal_db_error(err: &sqlx::Error) -> ApiError {
+    #[cfg(test)]
+    {
+        ApiError::Internal(format!("Error de base de datos: {err}"))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = err;
+        ApiError::Internal("Error de base de datos".into())
+    }
+}
+
 impl From<sqlx::Error> for ApiError {
     fn from(err: sqlx::Error) -> Self {
         if let sqlx::Error::Database(db_err) = &err {
@@ -71,7 +87,7 @@ impl From<sqlx::Error> for ApiError {
                 "P0001" => ApiError::Conflict(msg),
                 _ => {
                     tracing::error!(error = %err, code = code_str, "Database error");
-                    ApiError::Internal("Error de base de datos".into())
+                    internal_db_error(&err)
                 }
             };
         }
@@ -79,6 +95,6 @@ impl From<sqlx::Error> for ApiError {
             return ApiError::NotFound("Recurso no encontrado".into());
         }
         tracing::error!(error = %err, "Database error");
-        ApiError::Internal("Error de base de datos".into())
+        internal_db_error(&err)
     }
 }

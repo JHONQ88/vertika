@@ -3,6 +3,7 @@ import { Badge, Logo } from './ui';
 import { fmtPeriodo } from '../domain/format';
 import { NAV, type ViewKey } from '../ui-types';
 import type { SyncStatus } from '../store';
+import type { AuthUser } from '../api';
 
 export function Topbar({
   empresa,
@@ -10,18 +11,22 @@ export function Topbar({
   periodo,
   bloqueado,
   syncStatus,
+  usuario,
   onEmpresas,
   onPeriodo,
   onAyuda,
+  onAuth,
 }: {
   empresa: { nombreCorto: string; sigla: string; color: string; nit: string };
   pendientes: number;
   periodo: string;
   bloqueado: boolean;
   syncStatus?: SyncStatus;
+  usuario?: AuthUser;
   onEmpresas: () => void;
   onPeriodo: () => void;
   onAyuda: () => void;
+  onAuth?: () => void;
 }) {
   const modeLabel =
     syncStatus?.mode === 'postgres'
@@ -90,13 +95,26 @@ export function Topbar({
         <button className="icon-btn" onClick={onAyuda} title="Ayuda (F1)">
           <Icon name="help" size={18} />
         </button>
-        <div className="user-chip" title="Contador público">
-          <span className="user-avatar">LC</span>
+        <button
+          type="button"
+          className="user-chip"
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+          onClick={onAuth}
+          title="Cambiar usuario / rol (RBAC)"
+        >
+          <span className="user-avatar">
+            {(usuario?.nombre ?? 'LC')
+              .split(' ')
+              .slice(0, 2)
+              .map((w) => w[0] ?? '')
+              .join('')
+              .toUpperCase()}
+          </span>
           <div className="user-text">
-            <strong>Lina Castro</strong>
-            <small>Contador · Multi-conjunto</small>
+            <strong>{usuario?.nombre ?? 'Lina Castro'}</strong>
+            <small>{usuario?.rol ?? 'CONTADOR'} · Multi-conjunto</small>
           </div>
-        </div>
+        </button>
       </div>
     </header>
   );

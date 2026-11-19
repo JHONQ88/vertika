@@ -248,3 +248,4 @@ export function Chip({ label, onClear }: { label: string; onClear?: () => void }
     </span>
   );
 }
+

@@ -296,3 +296,127 @@ pub struct ClosePeriodResult {
     pub periodo_cerrado: String,
     pub auditoria: FrontendAuditoria,
 }
+
+fn default_apt() -> String {
+    "APARTAMENTO".into()
+}
+
+fn default_prov() -> String {
+    "PROVEEDOR".into()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BillPeriodRequest {
+    #[serde(rename = "incluirMora", alias = "incluir_mora", default)]
+    pub incluir_mora: bool,
+    #[serde(default)]
+    pub descripcion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BillPeriodResult {
+    pub comprobante: FrontendComprobante,
+    pub auditoria: FrontendAuditoria,
+    #[serde(rename = "unidadesFacturadas")]
+    pub unidades_facturadas: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenNextPeriodResult {
+    #[serde(rename = "empresaId")]
+    pub empresa_id: String,
+    #[serde(rename = "periodoAnterior")]
+    pub periodo_anterior: String,
+    #[serde(rename = "periodoNuevo")]
+    pub periodo_nuevo: String,
+    pub auditoria: FrontendAuditoria,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertUnitRequest {
+    pub torre: String,
+    pub numero: String,
+    #[serde(default = "default_apt")]
+    pub tipo: String,
+    #[serde(default)]
+    pub area: Decimal,
+    pub coeficiente: Decimal,
+    #[serde(default)]
+    pub matricula: String,
+    #[serde(rename = "propietarioId", alias = "propietario_id")]
+    pub propietario_id: String,
+    #[serde(rename = "arrendatarioId", alias = "arrendatario_id", default)]
+    pub arrendatario_id: Option<String>,
+    #[serde(rename = "carteraCongelada", alias = "cartera_congelada", default)]
+    pub cartera_congelada: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertThirdPartyRequest {
+    pub nombre: String,
+    #[serde(default = "default_prov")]
+    pub tipo: String,
+    pub documento: String,
+    #[serde(default)]
+    pub dv: Option<String>,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub telefono: String,
+    #[serde(default)]
+    pub ciudad: String,
+    #[serde(rename = "retefuentePct", alias = "retefuente_pct", default)]
+    pub retefuente_pct: Decimal,
+    #[serde(rename = "reteicaPct", alias = "reteica_pct", default)]
+    pub reteica_pct: Decimal,
+    #[serde(rename = "reteivaPct", alias = "reteiva_pct", default)]
+    pub reteiva_pct: Decimal,
+    #[serde(rename = "noObligado", alias = "no_obligado", default)]
+    pub no_obligado: bool,
+    #[serde(rename = "regimenEspecial", alias = "regimen_especial", default)]
+    pub regimen_especial: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePucAccountRequest {
+    #[serde(alias = "code")]
+    pub codigo: String,
+    #[serde(alias = "name")]
+    pub nombre: String,
+    #[serde(alias = "account_type")]
+    pub tipo: String,
+    #[serde(alias = "nature")]
+    pub naturaleza: String,
+    #[serde(rename = "rubroKey", alias = "rubro_key", default)]
+    pub rubro_key: Option<String>,
+    #[serde(rename = "requiereTercero", alias = "requiere_tercero", default)]
+    pub requiere_tercero: bool,
+    #[serde(rename = "requiereUnidad", alias = "requiere_unidad", default)]
+    pub requiere_unidad: bool,
+    #[serde(alias = "note", default)]
+    pub nota: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateRubroBudgetRequest {
+    #[serde(rename = "presupuestoAnual", alias = "presupuesto_anual")]
+    pub presupuesto_anual: Decimal,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateCompanySettingsRequest {
+    #[serde(rename = "razonSocial", alias = "razon_social", default)]
+    pub razon_social: Option<String>,
+    #[serde(default)]
+    pub direccion: Option<String>,
+    #[serde(rename = "fondoImprevistosPct", alias = "fondo_imprevistos_pct", default)]
+    pub fondo_imprevistos_pct: Option<Decimal>,
+    #[serde(rename = "tasaMoraMensual", alias = "tasa_mora_mensual", default)]
+    pub tasa_mora_mensual: Option<Decimal>,
+    #[serde(rename = "diaCorteProntoPago", alias = "dia_corte_pronto_pago", default)]
+    pub dia_corte_pronto_pago: Option<i16>,
+    #[serde(rename = "descuentoProntoPagoPct", alias = "descuento_pronto_pago_pct", default)]
+    pub descuento_pronto_pago_pct: Option<Decimal>,
+    #[serde(rename = "llaveBreB", alias = "llave_bre_b", default)]
+    pub llave_bre_b: Option<String>,
+}

@@ -1,19 +1,23 @@
+mod auth;
 mod db;
 mod domain;
 mod error;
 mod repo;
 
+use auth::{LoginRequest, LoginResponse, Role};
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderValue, Method, StatusCode},
-    routing::{get, post, put},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    routing::{get, patch, post, put},
     Json, Router,
 };
 use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
-    BalanceRequest, ClosePeriodRequest, CreateEntryRequest, Health, LedgerAccount,
-    UpdatePreEntryLinesRequest, ValidationResult, VoidEntryRequest,
+    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CreateEntryRequest,
+    CreatePucAccountRequest, Health, LedgerAccount, UpdateCompanySettingsRequest,
+    UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
 use error::ApiError;
 use repo::{memory::MemoryRepo, postgres::PostgresRepo, Store};
@@ -23,16 +27,18 @@ use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-const DEMO_ACTOR: &str = "Contador demo";
-
 struct AppState {
     store: Store,
+    auth_required: bool,
 }
 
 impl AppState {
     async fn new() -> Self {
         let seed: Value = serde_json::from_str(include_str!("../seed_bootstrap.json"))
             .expect("seed_bootstrap.json válido");
+        let auth_required = std::env::var("AUTH_REQUIRED")
+            .ok()
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
         let database_url = std::env::var("DATABASE_URL").ok();
         let store = match database_url {
             Some(url) if !url.trim().is_empty() => match Db::connect(&url).await {
@@ -53,15 +59,24 @@ impl AppState {
             },
             _ => Store::Memory(MemoryRepo::new(seed).expect("seed válido")),
         };
-        Self { store }
+        Self {
+            store,
+            auth_required,
+        }
     }
 
     #[cfg(test)]
     fn demo_for_tests() -> Self {
+        Self::demo_for_tests_with_auth(false)
+    }
+
+    #[cfg(test)]
+    fn demo_for_tests_with_auth(auth_required: bool) -> Self {
         let seed: Value = serde_json::from_str(include_str!("../seed_bootstrap.json"))
             .expect("seed_bootstrap.json válido");
         Self {
             store: Store::Memory(MemoryRepo::new(seed).expect("seed válido")),
+            auth_required,
         }
     }
 }
@@ -98,6 +113,8 @@ fn build_cors_layer() -> CorsLayer {
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/api/v1/auth/login", post(auth_login))
+        .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/state", get(get_state).put(put_state))
         .route("/api/v1/reset", post(reset_state))
@@ -122,6 +139,37 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(company_trial_balance),
         )
         .route("/api/v1/companies/:company_id/audit", get(company_audit))
+        // Endpoints Bloque C (causación masiva, apertura de periodo y CRUD maestros)
+        .route(
+            "/api/v1/companies/:company_id/periods/:period/bill",
+            post(bill_company_period),
+        )
+        .route(
+            "/api/v1/companies/:company_id/periods/open-next",
+            post(open_next_company_period),
+        )
+        .route("/api/v1/companies/:company_id/units", post(create_unit))
+        .route(
+            "/api/v1/companies/:company_id/units/:unit_id",
+            put(update_unit),
+        )
+        .route(
+            "/api/v1/companies/:company_id/third-parties",
+            post(create_third_party),
+        )
+        .route(
+            "/api/v1/companies/:company_id/third-parties/:tp_id",
+            put(update_third_party),
+        )
+        .route("/api/v1/companies/:company_id/puc", post(create_puc_account))
+        .route(
+            "/api/v1/companies/:company_id/rubros/:rubro_id",
+            put(update_rubro_budget),
+        )
+        .route(
+            "/api/v1/companies/:company_id/settings",
+            patch(update_company_settings),
+        )
         .with_state(state)
         .layer(build_cors_layer())
 }
@@ -170,29 +218,61 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
     })
 }
 
-async fn bootstrap(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+async fn auth_login(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    let user = state.store.authenticate(&req.email, &req.password).await?;
+    let token = auth::issue_token(&user)?;
+    Ok(Json(LoginResponse { token, user }))
+}
+
+async fn auth_me(headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, true)?;
+    Ok(Json(json!({ "user": ctx.user })))
+}
+
+async fn bootstrap(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
     Ok(Json(state.store.bootstrap().await?))
 }
 
-async fn get_state(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+async fn get_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
     Ok(Json(state.store.get_state().await?))
 }
 
 async fn put_state(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
     Ok(Json(state.store.put_state(payload).await?))
 }
 
-async fn reset_state(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+async fn reset_state(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
     Ok(Json(state.store.reset().await?))
 }
 
 async fn puc_catalog(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(q): Query<CompanyQuery>,
 ) -> Result<Json<Vec<LedgerAccount>>, ApiError> {
+    let _ctx = auth::extract_auth(&headers, state.auth_required)?;
     Ok(Json(state.store.list_puc(q.company_id.as_deref()).await?))
 }
 
@@ -264,34 +344,55 @@ async fn balance_preview(
 
 async fn update_pre_entry_lines(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(req): Json<UpdatePreEntryLinesRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
     let updated = state.store.update_pre_entry_lines(&id, req.lineas).await?;
     Ok(Json(serde_json::to_value(updated).unwrap_or_else(|_| json!({}))))
 }
 
 async fn approve_pre_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let out = state.store.approve_pre_entry(&id, DEMO_ACTOR).await?;
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
+    let out = state
+        .store
+        .approve_pre_entry(&id, &ctx.actor_label())
+        .await?;
     Ok(Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))))
 }
 
 async fn reject_pre_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let ev = state.store.reject_pre_entry(&id, DEMO_ACTOR).await?;
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
+    let ev = state
+        .store
+        .reject_pre_entry(&id, &ctx.actor_label())
+        .await?;
     Ok(Json(json!({ "ok": true, "auditoria": ev })))
 }
 
 async fn create_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<CreateEntryRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let out = state.store.create_entry(req, DEMO_ACTOR).await?;
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&req.company_id, &[Role::Contador])?;
+    let out = state
+        .store
+        .create_entry(req, &ctx.actor_label())
+        .await?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))),
@@ -300,19 +401,31 @@ async fn create_entry(
 
 async fn void_entry(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     body: Option<Json<VoidEntryRequest>>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
     let reason = body.and_then(|b| b.0.reason);
-    let out = state.store.void_entry(&id, reason, DEMO_ACTOR).await?;
+    let out = state
+        .store
+        .void_entry(&id, reason, &ctx.actor_label())
+        .await?;
     Ok(Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))))
 }
 
 async fn list_company_entries(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(company_id): Path<String>,
     Query(q): Query<PeriodQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(
+        &company_id,
+        &[Role::Contador, Role::Administrador, Role::RevisorFiscal, Role::Consejo],
+    )?;
     let entries = state
         .store
         .list_entries(&company_id, q.period.as_deref())
@@ -322,22 +435,31 @@ async fn list_company_entries(
 
 async fn close_company_period(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path((company_id, period)): Path<(String, String)>,
     body: Option<Json<ClosePeriodRequest>>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
     let req = body.map(|b| b.0).unwrap_or_default();
     let out = state
         .store
-        .close_period(&company_id, &period, req, DEMO_ACTOR)
+        .close_period(&company_id, &period, req, &ctx.actor_label())
         .await?;
     Ok(Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))))
 }
 
 async fn company_trial_balance(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(company_id): Path<String>,
     Query(q): Query<PeriodQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(
+        &company_id,
+        &[Role::Contador, Role::Administrador, Role::RevisorFiscal, Role::Consejo],
+    )?;
     let period = q.period.unwrap_or_else(|| "todos".into());
     let report = state.store.trial_balance(&company_id, &period).await?;
     Ok(Json(report))
@@ -345,10 +467,160 @@ async fn company_trial_balance(
 
 async fn company_audit(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(company_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(
+        &company_id,
+        &[Role::Contador, Role::Administrador, Role::RevisorFiscal, Role::Consejo],
+    )?;
     let events = state.store.list_audit(&company_id).await?;
     Ok(Json(serde_json::to_value(events).unwrap_or_else(|_| json!([]))))
+}
+
+async fn bill_company_period(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((company_id, period)): Path<(String, String)>,
+    body: Option<Json<BillPeriodRequest>>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let out = state
+        .store
+        .bill_period(&company_id, &period, req, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))))
+}
+
+async fn open_next_company_period(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
+    let out = state
+        .store
+        .open_next_period(&company_id, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))))
+}
+
+async fn create_unit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<UpsertUnitRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let unit = state
+        .store
+        .create_unit(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(unit).unwrap_or_else(|_| json!({}))),
+    ))
+}
+
+async fn update_unit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((company_id, unit_id)): Path<(String, String)>,
+    Json(req): Json<UpsertUnitRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let unit = state
+        .store
+        .update_unit(&company_id, &unit_id, req, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(unit).unwrap_or_else(|_| json!({}))))
+}
+
+async fn create_third_party(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<UpsertThirdPartyRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let tp = state
+        .store
+        .create_third_party(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(tp).unwrap_or_else(|_| json!({}))),
+    ))
+}
+
+async fn update_third_party(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((company_id, tp_id)): Path<(String, String)>,
+    Json(req): Json<UpsertThirdPartyRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let tp = state
+        .store
+        .update_third_party(&company_id, &tp_id, req, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(tp).unwrap_or_else(|_| json!({}))))
+}
+
+async fn create_puc_account(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<CreatePucAccountRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
+    let acc = state
+        .store
+        .create_puc_account(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(acc).unwrap_or_else(|_| json!({}))),
+    ))
+}
+
+async fn update_rubro_budget(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((company_id, rubro_id)): Path<(String, String)>,
+    Json(req): Json<UpdateRubroBudgetRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let rubro = state
+        .store
+        .update_rubro_budget(&company_id, &rubro_id, req.presupuesto_anual, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(rubro).unwrap_or_else(|_| json!({}))))
+}
+
+async fn update_company_settings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<UpdateCompanySettingsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let company = state
+        .store
+        .update_company_settings(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(company).unwrap_or_else(|_| json!({}))))
 }
 
 #[cfg(test)]
@@ -366,6 +638,24 @@ mod tests {
     async fn json_body(res: axum::response::Response) -> Value {
         let bytes = res.into_body().collect().await.expect("body").to_bytes();
         serde_json::from_slice(&bytes).expect("json")
+    }
+
+    async fn login_as(router: &Router, email: &str) -> String {
+        let res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": email, "password": auth::DEMO_PASSWORD }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        body["token"].as_str().unwrap().to_string()
     }
 
     async fn exercise_relational_http_lifecycle(router: Router) {
@@ -418,12 +708,8 @@ mod tests {
         assert_eq!(app_res.status(), StatusCode::OK);
         let approved = json_body(app_res).await;
         assert_eq!(approved["comprobante"]["estado"], "ASENTADO");
-        assert_eq!(
-            approved["comprobante"]["hash"].as_str().unwrap().len(),
-            64
-        );
+        assert_eq!(approved["comprobante"]["hash"].as_str().unwrap().len(), 64);
 
-        // Double approve returns 409 Conflict
         let dup_res = router
             .clone()
             .oneshot(
@@ -576,11 +862,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(aud_res.status(), StatusCode::OK);
-        assert!(aud_res.status() == StatusCode::OK);
         let aud_body = json_body(aud_res).await;
         assert!(!aud_body.as_array().unwrap().is_empty());
 
-        // 7. Close period 2026-11 -> creates NC and blocks subsequent entry in 2026-11
+        // 7. open-next before closing 2026-11 returns 409; close 2026-11 then open 2026-12 and bill
+        let open_early = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/periods/open-next")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_early.status(), StatusCode::CONFLICT);
+
         let close_res = router
             .clone()
             .oneshot(
@@ -608,12 +904,342 @@ mod tests {
             .unwrap();
         assert_eq!(post_after_close.status(), StatusCode::CONFLICT);
 
-        // 8. Reset back to seed
+        let open_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/periods/open-next")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_res.status(), StatusCode::OK);
+        let open_body = json_body(open_res).await;
+        assert_eq!(open_body["periodoAnterior"], "2026-11");
+        assert_eq!(open_body["periodoNuevo"], "2026-12");
+
+        // 8. Mass billing on 2026-12 + duplicate 409
+        let bill_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/periods/2026-12/bill")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "incluirMora": true }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bill_res.status(), StatusCode::OK);
+        let bill_body = json_body(bill_res).await;
+        assert_eq!(bill_body["comprobante"]["tipo"], "CC");
+        assert_eq!(bill_body["unidadesFacturadas"], 24);
+
+        let bill_dup = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/periods/2026-12/bill")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bill_dup.status(), StatusCode::CONFLICT);
+
+        // 9. CRUD: Unit, Third-party, PUC, Rubro budget, Company settings
+        let alt_unit = boot["datos"]["units"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["empresaId"] == "altavista")
+            .expect("altavista unit in bootstrap");
+        let unit_id = alt_unit["id"].as_str().unwrap().to_string();
+        let prop_id = alt_unit["propietarioId"].as_str().unwrap().to_string();
+        let unit_torre = alt_unit["torre"].as_str().unwrap().to_string();
+        let unit_numero = alt_unit["numero"].as_str().unwrap().to_string();
+
+        let new_unit = json!({
+            "torre": "Torre C",
+            "numero": "901",
+            "tipo": "APARTAMENTO",
+            "area": 105,
+            "coeficiente": 1.25,
+            "matricula": "50N-999999",
+            "propietarioId": prop_id,
+            "carteraCongelada": false
+        });
+        let u_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/units")
+                    .header("content-type", "application/json")
+                    .body(Body::from(new_unit.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(u_res.status(), StatusCode::CREATED);
+
+        let upd_unit = json!({
+            "torre": unit_torre,
+            "numero": unit_numero,
+            "tipo": "APARTAMENTO",
+            "area": 99,
+            "coeficiente": 3.526897,
+            "matricula": "50N-100000",
+            "propietarioId": prop_id,
+            "carteraCongelada": true
+        });
+        let uu_res = router
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/v1/companies/altavista/units/{unit_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(upd_unit.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(uu_res.status(), StatusCode::OK);
+        assert_eq!(json_body(uu_res).await["carteraCongelada"], true);
+
+        let tp_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/third-parties")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nombre": "Plomería Exprés S.A.S.",
+                            "tipo": "PROVEEDOR",
+                            "documento": "901.777.888",
+                            "dv": "1",
+                            "email": "pagos@plomeria.co",
+                            "telefono": "6015550000",
+                            "ciudad": "Bogotá D.C.",
+                            "retefuentePct": 4,
+                            "reteicaPct": 0.966,
+                            "reteivaPct": 0
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tp_res.status(), StatusCode::CREATED);
+        let tp_id = json_body(tp_res).await["id"].as_str().unwrap().to_string();
+
+        let tp_upd = router
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/v1/companies/altavista/third-parties/{tp_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nombre": "Plomería Exprés Ltda.",
+                            "tipo": "PROVEEDOR",
+                            "documento": "901.777.888",
+                            "dv": "1",
+                            "retefuentePct": 6,
+                            "reteicaPct": 0.966,
+                            "reteivaPct": 0
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tp_upd.status(), StatusCode::OK);
+        assert_eq!(json_body(tp_upd).await["retefuentePct"].as_f64(), Some(6.0));
+
+        let puc_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/puc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "codigo": "519545",
+                            "nombre": "Taxis y buses",
+                            "tipo": "GASTO",
+                            "naturaleza": "D",
+                            "rubroKey": "ADM"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(puc_res.status(), StatusCode::CREATED);
+
+        let puc_dup = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/puc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "codigo": "519545",
+                            "nombre": "Duplicada",
+                            "tipo": "GASTO",
+                            "naturaleza": "D"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(puc_dup.status(), StatusCode::CONFLICT);
+
+        let rubro_id = boot["datos"]["rubros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["empresaId"] == "altavista")
+            .expect("altavista rubro in bootstrap")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let rub_res = router
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/v1/companies/altavista/rubros/{rubro_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "presupuestoAnual": 160000000 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rub_res.status(), StatusCode::OK);
+        assert_eq!(
+            json_body(rub_res).await["presupuestoAnual"].as_f64(),
+            Some(160_000_000.0)
+        );
+
+        let set_res = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "tasaMoraMensual": 1.8 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set_res.status(), StatusCode::OK);
+        assert_eq!(json_body(set_res).await["tasaMoraMensual"].as_f64(), Some(1.8));
+
+        // 10. Reset back to seed
         let reset_res = router
             .oneshot(Request::post("/api/v1/reset").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(reset_res.status(), StatusCode::OK);
+    }
+
+    async fn exercise_auth_and_rbac(router: &Router, auth_required: bool) {
+        if auth_required {
+            let unauth = router
+                .clone()
+                .oneshot(Request::get("/api/v1/bootstrap").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let no_me = router
+            .clone()
+            .oneshot(Request::get("/api/v1/auth/me").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(no_me.status(), StatusCode::UNAUTHORIZED);
+
+        let tok_contador = login_as(router, "contador@vertika.co").await;
+        let tok_admin = login_as(router, "admin@vertika.co").await;
+        let tok_revisor = login_as(router, "revisor@vertika.co").await;
+
+        let me_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/auth/me")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(me_res.status(), StatusCode::OK);
+        assert_eq!(json_body(me_res).await["user"]["rol"], "CONTADOR");
+
+        // Revisor Fiscal is read-only -> 403 on entries and CRUD
+        let rev_entry = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/entries")
+                    .header("authorization", format!("Bearer {tok_revisor}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "companyId": "altavista",
+                            "period": "2026-11",
+                            "entryType": "CC",
+                            "date": "2026-11-18",
+                            "description": "Bloqueado",
+                            "lines": [
+                                { "cuenta": "519510", "descripcion": "A", "debito": 1000, "credito": 0 },
+                                { "cuenta": "220505", "descripcion": "B", "debito": 0, "credito": 1000 }
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rev_entry.status(), StatusCode::FORBIDDEN);
+
+        // Administrador cannot post accounting entries or close periods -> 403
+        let adm_close = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/periods/2026-11/close")
+                    .header("authorization", format!("Bearer {tok_admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adm_close.status(), StatusCode::FORBIDDEN);
+
+        // Administrador CAN update company settings -> 200
+        let adm_set = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("authorization", format!("Bearer {tok_admin}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "llaveBreB": "+57 300 000 9999" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(adm_set.status(), StatusCode::OK);
+
+        // Reset as Contador
+        let rst = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/reset")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rst.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -824,6 +1450,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_and_rbac_work_in_memory() {
+        let router_strict = build_router(Arc::new(AppState::demo_for_tests_with_auth(true)));
+        exercise_auth_and_rbac(&router_strict, true).await;
+    }
+
+    #[tokio::test]
     async fn postgres_relational_lifecycle_if_configured() {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
             return;
@@ -842,7 +1474,6 @@ mod tests {
             .expect("init postgres repo");
         let _ = pg.reset().await.expect("reset postgres to seed");
 
-        // Verificar triggers SQL directamente
         let comp_uuid: uuid::Uuid =
             sqlx::query_scalar("SELECT id FROM copropiedades WHERE slug = 'altavista'")
                 .fetch_one(&db.pool)
@@ -896,9 +1527,10 @@ mod tests {
             .await;
         assert!(del_res.is_err(), "DELETE on ASENTADO voucher must fail");
 
-        // 4) Ciclo HTTP completo sobre PostgreSQL real
+        // 4) Ciclo HTTP completo + Auth/RBAC sobre PostgreSQL real
         let router = build_router(Arc::new(AppState {
             store: Store::Postgres(pg),
+            auth_required: false,
         }));
         let h = router
             .clone()
@@ -909,6 +1541,7 @@ mod tests {
         assert_eq!(hb["mode"], "postgres");
         assert_eq!(hb["postgres_enabled"], true);
 
+        exercise_auth_and_rbac(&router, false).await;
         exercise_relational_http_lifecycle(router).await;
     }
 }

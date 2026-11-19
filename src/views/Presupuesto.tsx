@@ -1,12 +1,17 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { fmtMoney, fmtPct, fmtPeriodo } from '../domain/format';
 import { ejecucionPresupuestal, resumenPeriodo } from '../domain/engine';
-import { rubrosDe, unidadesDe, DATOS } from '../store';
+import { acciones, rubrosDe, unidadesDe, DATOS, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
-import { Badge, Card, ProgressBar, Stat, ViewHeader } from '../components/ui';
+import { Badge, Btn, Card, ProgressBar, Stat, ViewHeader } from '../components/ui';
 
 export function Presupuesto(props: VistaProps) {
-  const { empresa, estado } = props;
+  const { empresa, estado, toast } = props;
+  const auth = useAuth();
+  const puedeEditar = tienePermiso(auth.user.rol, 'maestros');
+  const [editState, setEditState] = useState<{ id: string; valor: string } | null>(null);
+  const [guardandoId, setGuardandoId] = useState<string | null>(null);
+
   const rubros = useMemo(() => rubrosDe(estado), [estado]);
   const filas = useMemo(
     () => ejecucionPresupuestal(estado.comprobantes, empresa, rubros, estado.periodo),
@@ -23,6 +28,27 @@ export function Presupuesto(props: VistaProps) {
   const pct = presupuesto > 0 ? (ejecutado / presupuesto) * 100 : 0;
   const filasCriticas = filas.filter((f) => f.estado !== 'normal');
   const mes = Number(estado.periodo.split('-')[1]);
+
+  const guardarRubro = async (rubroId: string, nombre: string) => {
+    if (!editState) return;
+    const monto = Number(editState.valor);
+    if (!Number.isFinite(monto) || monto < 0) {
+      toast({ tone: 'error', title: 'Valor inválido', msg: 'Ingresa un presupuesto anual numérico >= 0.' });
+      return;
+    }
+    setGuardandoId(rubroId);
+    try {
+      const res = await acciones.actualizarPresupuestoRubro(rubroId, monto);
+      if (res.ok) {
+        toast({ tone: 'ok', title: 'Presupuesto actualizado', msg: `${nombre}: ${fmtMoney(monto)}` });
+        setEditState(null);
+      } else {
+        toast({ tone: 'error', title: 'No se pudo actualizar', msg: res.error });
+      }
+    } finally {
+      setGuardandoId(null);
+    }
+  };
 
   return (
     <div className="vista">
@@ -64,6 +90,7 @@ export function Presupuesto(props: VistaProps) {
                 <th className="num">Disponible</th>
                 <th className="w-32">Avance</th>
                 <th>Estado</th>
+                {puedeEditar && <th>Acciones</th>}
               </tr>
             </thead>
             <tbody>
@@ -74,7 +101,21 @@ export function Presupuesto(props: VistaProps) {
                     <small className="mono">{f.rubro.cuenta}</small>
                   </td>
                   <td className="celda-desc">{f.rubro.centro}</td>
-                  <td className="num">{fmtMoney(f.presupuesto)}</td>
+                  <td className="num">
+                    {editState?.id === f.rubro.id ? (
+                      <input
+                        type="number"
+                        min={0}
+                        step={100000}
+                        value={editState.valor}
+                        onChange={(e) => setEditState({ id: f.rubro.id, valor: e.target.value })}
+                        style={{ width: 130, textAlign: 'right' }}
+                        aria-label={`Presupuesto anual de ${f.rubro.nombre}`}
+                      />
+                    ) : (
+                      fmtMoney(f.presupuesto)
+                    )}
+                  </td>
                   <td className="num">{fmtMoney(f.ejecutado)}</td>
                   <td className={`num ${f.disponible < 0 ? 'text-error' : ''}`}>{fmtMoney(f.disponible)}</td>
                   <td>
@@ -88,6 +129,33 @@ export function Presupuesto(props: VistaProps) {
                     {f.estado === 'alerta' && <Badge tone="warn">Alerta</Badge>}
                     {f.estado === 'normal' && <Badge tone="ok">Normal</Badge>}
                   </td>
+                  {puedeEditar && (
+                    <td>
+                      {editState?.id === f.rubro.id ? (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Btn
+                            size="xs"
+                            variant="primary"
+                            disabled={guardandoId === f.rubro.id}
+                            onClick={() => void guardarRubro(f.rubro.id, f.rubro.nombre)}
+                          >
+                            Guardar
+                          </Btn>
+                          <Btn size="xs" variant="ghost" onClick={() => setEditState(null)}>
+                            Cancelar
+                          </Btn>
+                        </div>
+                      ) : (
+                        <Btn
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => setEditState({ id: f.rubro.id, valor: String(f.presupuesto) })}
+                        >
+                          Editar
+                        </Btn>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

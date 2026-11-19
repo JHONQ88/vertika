@@ -1,13 +1,88 @@
 import { useState } from 'react';
 import { fmtFechaHora, fmtMoney, fmtPeriodo, fmtPct } from '../domain/format';
-import { acciones, exportarEstado } from '../store';
+import { acciones, exportarEstado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Card, ViewHeader } from '../components/ui';
 
 export function Ajustes(props: VistaProps) {
   const { empresa, estado, toast } = props;
+  const auth = useAuth();
+  const puedeEditar = tienePermiso(auth.user.rol, 'maestros');
   const [confirmando, setConfirmando] = useState(false);
+  const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
+  const [guardandoEmpresa, setGuardandoEmpresa] = useState(false);
+  const [formEmpresa, setFormEmpresa] = useState({
+    razonSocial: empresa.razonSocial,
+    direccion: empresa.direccion,
+    fondoImprevistosPct: String(empresa.fondoImprevistosPct),
+    tasaMoraMensual: String(empresa.tasaMoraMensual),
+    diaCorteProntoPago: String(empresa.diaCorteProntoPago),
+    descuentoProntoPagoPct: String(empresa.descuentoProntoPagoPct),
+    llaveBreB: empresa.llaveBreB,
+  });
+  const editando = editingCompanyId === empresa.id && puedeEditar;
   const auditoriaEmpresa = estado.auditoria.filter((e) => e.empresaId === empresa.id);
+
+  const abrirEdicionEmpresa = () => {
+    setFormEmpresa({
+      razonSocial: empresa.razonSocial,
+      direccion: empresa.direccion,
+      fondoImprevistosPct: String(empresa.fondoImprevistosPct),
+      tasaMoraMensual: String(empresa.tasaMoraMensual),
+      diaCorteProntoPago: String(empresa.diaCorteProntoPago),
+      descuentoProntoPagoPct: String(empresa.descuentoProntoPagoPct),
+      llaveBreB: empresa.llaveBreB,
+    });
+    setEditingCompanyId(empresa.id);
+  };
+
+  const guardarParametros = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const fondoImprevistosPct = Number(formEmpresa.fondoImprevistosPct);
+    const tasaMoraMensual = Number(formEmpresa.tasaMoraMensual);
+    const diaCorteProntoPago = Math.trunc(Number(formEmpresa.diaCorteProntoPago));
+    const descuentoProntoPagoPct = Number(formEmpresa.descuentoProntoPagoPct);
+    if (
+      !formEmpresa.razonSocial.trim() ||
+      !formEmpresa.direccion.trim() ||
+      !Number.isFinite(fondoImprevistosPct) ||
+      fondoImprevistosPct < 0 ||
+      !Number.isFinite(tasaMoraMensual) ||
+      tasaMoraMensual < 0 ||
+      !Number.isFinite(diaCorteProntoPago) ||
+      diaCorteProntoPago < 1 ||
+      diaCorteProntoPago > 31 ||
+      !Number.isFinite(descuentoProntoPagoPct) ||
+      descuentoProntoPagoPct < 0
+    ) {
+      toast({
+        tone: 'error',
+        title: 'Parámetros inválidos',
+        msg: 'Verifica razón social, dirección, porcentajes >= 0 y día de corte (1 a 31).',
+      });
+      return;
+    }
+    setGuardandoEmpresa(true);
+    try {
+      const res = await acciones.actualizarParametrosEmpresa({
+        razonSocial: formEmpresa.razonSocial.trim(),
+        direccion: formEmpresa.direccion.trim(),
+        fondoImprevistosPct,
+        tasaMoraMensual,
+        diaCorteProntoPago,
+        descuentoProntoPagoPct,
+        llaveBreB: formEmpresa.llaveBreB.trim(),
+      });
+      if (res.ok) {
+        toast({ tone: 'ok', title: 'Parámetros guardados', msg: res.detalle });
+        setEditingCompanyId(null);
+      } else {
+        toast({ tone: 'error', title: 'No se pudo guardar', msg: res.error });
+      }
+    } finally {
+      setGuardandoEmpresa(false);
+    }
+  };
 
   const descargarJSON = () => {
     const blob = new Blob([exportarEstado()], { type: 'application/json;charset=utf-8' });
@@ -55,14 +130,113 @@ export function Ajustes(props: VistaProps) {
 
       <div className="dos-col">
         <Card title="Datos del conjunto" subtitle="Parametrización contable y financiera">
-          <div className="campos">
-            {campos.map((c) => (
-              <div key={c.label} className="campo">
-                <small>{c.label}</small>
-                <strong>{c.valor}</strong>
+          {!editando ? (
+            <>
+              <div className="campos">
+                {campos.map((c) => (
+                  <div key={c.label} className="campo">
+                    <small>{c.label}</small>
+                    <strong>{c.valor}</strong>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+              {puedeEditar && (
+                <div className="cierre-acciones" style={{ marginTop: 14 }}>
+                  <Btn size="sm" variant="outline" icon="settings" onClick={abrirEdicionEmpresa}>
+                    Editar parámetros
+                  </Btn>
+                </div>
+              )}
+            </>
+          ) : (
+            <form onSubmit={(e) => void guardarParametros(e)}>
+              <div className="campos">
+                <label className="campo">
+                  <small>Razón social</small>
+                  <input
+                    required
+                    value={formEmpresa.razonSocial}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, razonSocial: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Dirección</small>
+                  <input
+                    required
+                    value={formEmpresa.direccion}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, direccion: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Tasa de mora mensual (%)</small>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formEmpresa.tasaMoraMensual}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, tasaMoraMensual: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Día de corte pronto pago</small>
+                  <input
+                    required
+                    type="number"
+                    step="1"
+                    min="1"
+                    max="31"
+                    value={formEmpresa.diaCorteProntoPago}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, diaCorteProntoPago: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Descuento pronto pago (%)</small>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formEmpresa.descuentoProntoPagoPct}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, descuentoProntoPagoPct: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Fondo de imprevistos (%)</small>
+                  <input
+                    required
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formEmpresa.fondoImprevistosPct}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, fondoImprevistosPct: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Llave Bre-B</small>
+                  <input
+                    value={formEmpresa.llaveBreB}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, llaveBreB: e.target.value }))}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+              </div>
+              <div className="cierre-acciones" style={{ marginTop: 14 }}>
+                <Btn size="sm" variant="ghost" type="button" onClick={() => setEditingCompanyId(null)}>
+                  Cancelar
+                </Btn>
+                <Btn size="sm" variant="primary" type="submit" icon="check" disabled={guardandoEmpresa}>
+                  {guardandoEmpresa ? 'Guardando…' : 'Guardar parámetros'}
+                </Btn>
+              </div>
+            </form>
+          )}
         </Card>
 
         <Card title="Datos y sincronización" subtitle="Persistencia local y/o backend">
