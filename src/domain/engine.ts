@@ -12,6 +12,7 @@ import { CUENTAS, CUENTA_MAP } from './puc';
 import { diasVencido, fmtMoney } from './format';
 
 const round100 = (n: number) => Math.round(n / 100) * 100;
+const estaActivo = (c: Comprobante) => c.estado !== 'ANULADO';
 
 export function totalesLineas(lineas: Linea[]): { debito: number; credito: number } {
   return {
@@ -29,6 +30,10 @@ export function validarAsiento(lineas: Linea[]): AsientoValidacion {
   lineas.forEach((l, i) => {
     const n = i + 1;
     if (!CUENTA_MAP[l.cuenta]) errores.push(`Línea ${n}: la cuenta ${l.cuenta} no existe en el PUC ESAL.`);
+    if (!Number.isFinite(l.debito) || !Number.isFinite(l.credito) || l.debito < 0 || l.credito < 0) {
+      errores.push(`Línea ${n}: los montos no pueden ser negativos ni inválidos.`);
+      return;
+    }
     if (l.debito > 0 && l.credito > 0) errores.push(`Línea ${n}: no puede tener débito y crédito simultáneos.`);
     if (l.debito === 0 && l.credito === 0) errores.push(`Línea ${n}: el monto debe ser mayor a cero.`);
   });
@@ -78,7 +83,7 @@ export function filasLibro(
 ): FilaLibro[] {
   const filas: FilaLibro[] = [];
   for (const c of comprobantes) {
-    if (c.empresaId !== empresaId) continue;
+    if (!estaActivo(c) || c.empresaId !== empresaId) continue;
     if (periodo !== 'todos' && c.periodo !== periodo) continue;
     for (const l of c.lineas) {
       if (filtro?.cuenta && l.cuenta !== filtro.cuenta) continue;
@@ -120,7 +125,7 @@ export function saldoCuenta(
   let debito = 0;
   let credito = 0;
   for (const c of comprobantes) {
-    if (c.empresaId !== empresa.id) continue;
+    if (!estaActivo(c) || c.empresaId !== empresa.id) continue;
     if (hastaPeriodo !== 'todos' && c.periodo > hastaPeriodo) continue;
     for (const l of c.lineas) {
       if (l.cuenta !== cuenta) continue;
@@ -166,7 +171,7 @@ export function balancePrueba(
     let creditosAntes = 0;
 
     for (const c of comprobantes) {
-      if (c.empresaId !== empresa.id) continue;
+      if (!estaActivo(c) || c.empresaId !== empresa.id) continue;
       if (hastaPeriodoIncluido(c.periodo, periodo)) {
         for (const l of c.lineas) {
           if (l.cuenta !== cuenta.codigo) continue;
@@ -206,7 +211,10 @@ export function balancePrueba(
 
   const totalDebitos = filas.reduce((s, f) => s + f.debitos, 0);
   const totalCreditos = filas.reduce((s, f) => s + f.creditos, 0);
-  const totalSaldoAnterior = filas.reduce((s, f) => s + f.saldoAnterior, 0);
+  const totalSaldoAnterior = filas.reduce(
+    (s, f) => s + (f.naturaleza === 'D' ? f.saldoAnterior : -f.saldoAnterior),
+    0,
+  );
   // La columna de saldo está firmada por naturaleza: activo/gasto positivo,
   // pasivo/patrimonio/ingreso positivo. El neto contable debe ser cero.
   const totalSaldoActual = filas.reduce(
@@ -255,7 +263,7 @@ export function ejecucionPresupuestal(
     .map((rubro) => {
       let ejecutado = 0;
       for (const c of comprobantes) {
-        if (c.empresaId !== empresa.id) continue;
+        if (!estaActivo(c) || c.empresaId !== empresa.id) continue;
         if (!c.periodo.startsWith(anio)) continue;
         if (c.periodo > periodo) continue;
         for (const l of c.lineas) {
@@ -308,7 +316,11 @@ export function cartera(
   periodo: string,
 ): FilaCartera[] {
   const periodos = Array.from(
-    new Set(comprobantes.filter((c) => c.empresaId === empresa.id && c.periodo <= periodo).map((c) => c.periodo)),
+    new Set(
+      comprobantes
+        .filter((c) => estaActivo(c) && c.empresaId === empresa.id && c.periodo <= periodo)
+        .map((c) => c.periodo),
+    ),
   ).sort();
 
   return unidades.map((unidad) => {
@@ -322,7 +334,7 @@ export function cartera(
       let cargo = 0;
       let abono = 0;
       for (const c of comprobantes) {
-        if (c.empresaId !== empresa.id || c.periodo !== p) continue;
+        if (!estaActivo(c) || c.empresaId !== empresa.id || c.periodo !== p) continue;
         for (const l of c.lineas) {
           if (l.unidadId !== unidad.id) continue;
           if (!CUENTAS_CARTERA.includes(l.cuenta)) continue;
@@ -333,13 +345,20 @@ export function cartera(
       cargado += cargo;
       pagado += abono;
       saldoPorPeriodo += cargo - abono;
-      if (saldoPorPeriodo > 0.01 && periodoMasAntiguo === null) {
+      if (saldoPorPeriodo <= 0.01) {
+        periodoMasAntiguo = null;
+        mesesMora = 0;
+      } else if (periodoMasAntiguo === null) {
         periodoMasAntiguo = p;
         mesesMora = diasVencido(p, periodo);
       }
     }
 
     const saldo = round100(cargado - pagado);
+    if (saldo <= 0.01) {
+      periodoMasAntiguo = null;
+      mesesMora = 0;
+    }
     let estado: FilaCartera['estado'] = 'AL_DIA';
     if (saldo > 0.01) {
       if (unidad.carteraCongelada) estado = 'CONGELADA';
@@ -357,7 +376,7 @@ export function cartera(
       pagado: round100(pagado),
       saldo,
       mesesMora,
-      diasVencido: periodoMasAntiguo ? mesesMora * 30 + 10 : 0,
+      diasVencido: saldo > 0.01 && periodoMasAntiguo ? mesesMora * 30 + 10 : 0,
       periodoMasAntiguo,
       estado,
     };
@@ -383,7 +402,7 @@ export function previewCierre(
   const carteraTotal = rows.reduce((s, r) => s + r.saldo, 0);
   let trasladoFondo = 0;
   for (const c of comprobantes) {
-    if (c.empresaId !== empresa.id || c.periodo !== periodo) continue;
+    if (!estaActivo(c) || c.empresaId !== empresa.id || c.periodo !== periodo) continue;
     for (const l of c.lineas) {
       if (l.cuenta === '281510' && l.credito > 0) trasladoFondo += l.credito;
     }
@@ -403,14 +422,25 @@ export function lineasCierre(
   rubros: Rubro[],
 ): Linea[] {
   const rubro = (key: string) => rubros.find((r) => r.key === key)?.id;
-  const lineas: Linea[] = [
-    { id: `cie-${periodo}-1`, cuenta: '516005', descripcion: 'Depreciación de PP&E', debito: preview.depreciacion, credito: 0, rubroId: rubro('MAN') },
-    { id: `cie-${periodo}-2`, cuenta: '159215', descripcion: 'Depreciación acumulada', debito: 0, credito: preview.depreciacion },
-    { id: `cie-${periodo}-3`, cuenta: '519905', descripcion: 'Provisión deterioro de cartera', debito: preview.provision, credito: 0, rubroId: rubro('FIN') },
-    { id: `cie-${periodo}-4`, cuenta: '139905', descripcion: 'Deterioro de cartera', debito: 0, credito: preview.provision },
-    { id: `cie-${periodo}-5`, cuenta: '111010', descripcion: 'Bancos - Fondo de imprevistos', debito: preview.trasladoFondo, credito: 0 },
-    { id: `cie-${periodo}-6`, cuenta: '111005', descripcion: 'Bancos - cuenta recaudadora', debito: 0, credito: preview.trasladoFondo },
-  ];
+  const lineas: Linea[] = [];
+  if (preview.depreciacion > 0) {
+    lineas.push(
+      { id: `cie-${periodo}-1`, cuenta: '516005', descripcion: 'Depreciación de PP&E', debito: preview.depreciacion, credito: 0, rubroId: rubro('MAN') },
+      { id: `cie-${periodo}-2`, cuenta: '159215', descripcion: 'Depreciación acumulada', debito: 0, credito: preview.depreciacion },
+    );
+  }
+  if (preview.provision > 0) {
+    lineas.push(
+      { id: `cie-${periodo}-3`, cuenta: '519905', descripcion: 'Provisión deterioro de cartera', debito: preview.provision, credito: 0, rubroId: rubro('FIN') },
+      { id: `cie-${periodo}-4`, cuenta: '139905', descripcion: 'Deterioro de cartera', debito: 0, credito: preview.provision },
+    );
+  }
+  if (preview.trasladoFondo > 0) {
+    lineas.push(
+      { id: `cie-${periodo}-5`, cuenta: '111010', descripcion: 'Bancos - Fondo de imprevistos', debito: preview.trasladoFondo, credito: 0 },
+      { id: `cie-${periodo}-6`, cuenta: '111005', descripcion: 'Bancos - cuenta recaudadora', debito: 0, credito: preview.trasladoFondo },
+    );
+  }
   return lineas;
 }
 
@@ -424,34 +454,45 @@ export function acarrearPreAsiento(
   const provider = terceros.find((t) => t.id === pre.terceroId);
   if (!provider) return null;
 
-  const gastoLines = pre.lineas.filter((l) => l.debito > 0 && l.cuenta !== '135515' && l.cuenta !== '111005' && l.cuenta !== '417035');
-  const ivaLine = pre.lineas.find((l) => l.cuenta === '135515');
+  const gastoLines = pre.lineas.filter(
+    (l) =>
+      Number.isFinite(l.debito) &&
+      l.debito > 0 &&
+      l.cuenta !== '135515' &&
+      l.cuenta !== '111005' &&
+      l.cuenta !== '417035',
+  );
+  const ivaLines = pre.lineas.filter(
+    (l) => Number.isFinite(l.debito) && l.debito > 0 && l.cuenta === '135515',
+  );
   if (gastoLines.length === 0) return null;
 
-  const base = round100(gastoLines.reduce((s, l) => s + l.debito, 0));
-  const iva = round100(ivaLine?.debito ?? 0);
+  const baseRaw = gastoLines.reduce((s, l) => s + l.debito, 0);
+  const ivaRaw = ivaLines.reduce((s, l) => s + l.debito, 0);
 
   if (provider.retefuentePct === 0 && provider.reteicaPct === 0 && provider.reteivaPct === 0) {
     return null;
   }
 
-  const rf = round100((base * provider.retefuentePct) / 100);
-  const ri = round100((base * provider.reteicaPct) / 100);
-  const riva = round100((iva * provider.reteivaPct) / 100);
-  const neto = base + iva - rf - ri - riva;
+  const rf = round100((baseRaw * provider.retefuentePct) / 100);
+  const ri = round100((baseRaw * provider.reteicaPct) / 100);
+  const riva = round100((ivaRaw * provider.reteivaPct) / 100);
+  const neto = Math.round((baseRaw + ivaRaw - rf - ri - riva) * 100) / 100;
+  if (neto < 0) return null;
 
-  const nuevas: Linea[] = [...gastoLines];
-  if (ivaLine) nuevas.push(ivaLine);
+  const nuevas: Linea[] = [...gastoLines, ...ivaLines];
 
-  const netoOriginal = pre.lineas.find((l) => l.cuenta === '220505');
-  nuevas.push({
-    id: netoOriginal?.id ?? `ac-${++acarreoSeq}`,
-    cuenta: '220505',
-    descripcion: 'Cuenta por pagar',
-    debito: 0,
-    credito: neto,
-    terceroId: provider.id,
-  });
+  if (neto > 0) {
+    const netoOriginal = pre.lineas.find((l) => l.cuenta === '220505');
+    nuevas.push({
+      id: netoOriginal?.id ?? `ac-${++acarreoSeq}`,
+      cuenta: '220505',
+      descripcion: 'Cuenta por pagar',
+      debito: 0,
+      credito: neto,
+      terceroId: provider.id,
+    });
+  }
 
   const retenciones: Array<[string, string, number]> = [
     ['236540', 'Retención en la fuente', rf],
@@ -505,7 +546,7 @@ export function resumenPeriodo(
   let descuentos = 0;
   let gastos = 0;
   for (const c of comprobantes) {
-    if (c.empresaId !== empresa.id || c.periodo !== periodo) continue;
+    if (!estaActivo(c) || c.empresaId !== empresa.id || c.periodo !== periodo) continue;
     for (const l of c.lineas) {
       if (l.cuenta === '417005' && l.credito > 0) facturado += l.credito;
       if (l.cuenta === '111005' && l.debito > 0) recaudado += l.debito;

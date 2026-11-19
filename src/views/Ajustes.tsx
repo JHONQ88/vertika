@@ -7,6 +7,7 @@ import { Badge, Btn, Card, ViewHeader } from '../components/ui';
 export function Ajustes(props: VistaProps) {
   const { empresa, estado, toast } = props;
   const [confirmando, setConfirmando] = useState(false);
+  const auditoriaEmpresa = estado.auditoria.filter((e) => e.empresaId === empresa.id);
 
   const descargarJSON = () => {
     const blob = new Blob([exportarEstado()], { type: 'application/json;charset=utf-8' });
@@ -86,9 +87,9 @@ export function Ajustes(props: VistaProps) {
         </Card>
       </div>
 
-      <Card title="Auditoría" subtitle={`${estado.auditoria.length} eventos registrados`}>
+      <Card title="Auditoría" subtitle={`${auditoriaEmpresa.length} eventos registrados`}>
         <div className="audit">
-          {estado.auditoria.slice(0, 30).map((e) => (
+          {auditoriaEmpresa.slice(0, 30).map((e) => (
             <div key={e.id} className="audit-item">
               <span className={`audit-dot ${e.accion.includes('Cierre') || e.accion.includes('cierre') ? 'dot-ok' : 'dot-info'}`} />
               <div>
@@ -101,7 +102,7 @@ export function Ajustes(props: VistaProps) {
               </div>
             </div>
           ))}
-          {estado.auditoria.length === 0 && <p className="card-note">Sin eventos.</p>}
+          {auditoriaEmpresa.length === 0 && <p className="card-note">Sin eventos.</p>}
         </div>
       </Card>
 

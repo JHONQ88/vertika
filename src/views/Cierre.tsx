@@ -12,11 +12,10 @@ export function Cierre(props: VistaProps) {
   const [depreciacion, setDepreciacion] = useState(true);
   const [provision, setProvision] = useState(true);
   const [traslado, setTraslado] = useState(true);
-  const [hecho, setHecho] = useState(false);
 
   const preview = useMemo(
     () => previewCierre(estado.comprobantes, empresa, unidadesDe(estado), DATOS.terceros, estado.periodo),
-    [estado.comprobantes, empresa, estado.periodo],
+    [estado, empresa],
   );
   const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
   const cierreExistente = estado.comprobantes.find(
@@ -26,7 +25,6 @@ export function Cierre(props: VistaProps) {
   const ejecutar = async () => {
     const res = await acciones.ejecutarCierre(estado.periodo, { depreciacion, provision, traslado });
     if (res.ok) {
-      setHecho(true);
       toast({ tone: 'ok', title: 'Cierre ejecutado', msg: `${res.detalle} · periodo bloqueado` });
     } else {
       toast({ tone: 'error', title: 'No se pudo cerrar', msg: res.error });
@@ -98,10 +96,9 @@ export function Cierre(props: VistaProps) {
           </div>
 
           <div className="cierre-acciones">
-            <Btn variant="primary" icon="lock" onClick={ejecutar} disabled={bloqueado || hecho}>
-              {hecho ? 'Cierre ejecutado' : 'Ejecutar cierre y bloquear periodo'}
+            <Btn variant="primary" icon="lock" onClick={ejecutar} disabled={bloqueado}>
+              {bloqueado ? 'Periodo cerrado' : 'Ejecutar cierre y bloquear periodo'}
             </Btn>
-            {hecho && !bloqueado && <Badge tone="ok">Listo</Badge>}
           </div>
         </Card>
 

@@ -4,7 +4,7 @@
  */
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
-import type { VistaProps, ViewKey } from '../src/ui-types';
+import type { VistaProps } from '../src/ui-types';
 import { acciones, empresaActiva, esPeriodoBloqueado, getEstado, DATOS } from '../src/store';
 import { fmtPeriodo } from '../src/domain/format';
 import { Bandeja } from '../src/views/Bandeja';

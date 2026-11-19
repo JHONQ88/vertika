@@ -19,6 +19,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
 dotenvy = "0.15"
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
 [features]
 default = []
 postgres = []  # reservado; la integración usa sqlx cuando DATABASE_URL está definido

@@ -37,7 +37,8 @@ export function Cartera(props: VistaProps) {
     const vencida = filtradas.filter((f) => f.estado === 'EN_MORA').reduce((s, f) => s + f.saldo, 0);
     const alDia = filtradas.filter((f) => f.estado === 'AL_DIA').length;
     const congeladas = filtradas.filter((f) => f.estado === 'CONGELADA').length;
-    return { saldo, vencida, alDia, congeladas, mora: filtradas.length - alDia };
+    const mora = filtradas.filter((f) => f.estado === 'EN_MORA').length;
+    return { saldo, vencida, alDia, congeladas, mora };
   }, [filtradas]);
 
   const antiguedad = useMemo(() => {

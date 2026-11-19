@@ -22,16 +22,18 @@ export function Libro(props: VistaProps) {
     const naturaleza = CUENTA_MAP[filtros.cuenta]?.naturaleza ?? 'D';
     let saldo = empresa.saldosIniciales[filtros.cuenta] ?? 0;
     for (const c of estado.comprobantes) {
-      if (c.empresaId !== empresa.id || c.periodo >= estado.periodo) continue;
+      if (c.estado === 'ANULADO' || c.empresaId !== empresa.id || c.periodo >= estado.periodo) continue;
       for (const l of c.lineas) {
         if (l.cuenta !== filtros.cuenta) continue;
         saldo += naturaleza === 'D' ? l.debito - l.credito : l.credito - l.debito;
       }
     }
-    return filas.map((f) => {
+    const salida: Array<(typeof filas)[number] & { saldo: number | null }> = [];
+    for (const f of filas) {
       saldo += naturaleza === 'D' ? f.debito - f.credito : f.credito - f.debito;
-      return { ...f, saldo };
-    });
+      salida.push({ ...f, saldo });
+    }
+    return salida;
   }, [filas, filtros.cuenta, empresa, estado.comprobantes, estado.periodo]);
 
   const resumen = useMemo(() => {

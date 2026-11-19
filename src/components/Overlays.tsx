@@ -171,8 +171,6 @@ export function CommandPalette({
       .map((r) => r.it);
   }, [items, q]);
 
-  useEffect(() => setIdx(0), [q]);
-
   useEffect(() => {
     const el = listaRef.current?.querySelector<HTMLElement>(`[data-idx="${idx}"]`);
     el?.scrollIntoView({ block: 'nearest' });
@@ -197,7 +195,10 @@ export function CommandPalette({
             autoFocus
             value={q}
             placeholder="Buscar cuenta PUC, unidad, tercero, comprobante o acción…"
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setIdx(0);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -314,12 +315,21 @@ export function PeriodosModal({
   estado: EstadoApp;
   onClose: () => void;
 }) {
-  const anio = 2026;
+  const [anio, setAnio] = useState(() => Number(estado.periodo.split('-')[0]) || 2026);
   const cerrados = estado.periodosCerrados[estado.activeCompanyId] ?? [];
   const actual = DATOS.companies.find((c) => c.id === estado.activeCompanyId)?.periodoActual ?? '2026-11';
 
   return (
     <Modal open onClose={onClose} title="Periodo contable" subtitle="Los periodos cerrados quedan bloqueados para auditoría" width={620}>
+      <div className="toolbar" style={{ marginTop: 0, justifyContent: 'space-between' }}>
+        <Btn size="sm" variant="outline" onClick={() => setAnio((a) => a - 1)}>
+          ‹ {anio - 1}
+        </Btn>
+        <strong className="mono">{anio}</strong>
+        <Btn size="sm" variant="outline" onClick={() => setAnio((a) => a + 1)}>
+          {anio + 1} ›
+        </Btn>
+      </div>
       <div className="periodos">
         {Array.from({ length: 12 }, (_, i) => {
           const p = `${anio}-${String(i + 1).padStart(2, '0')}`;

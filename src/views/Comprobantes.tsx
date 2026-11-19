@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Comprobante, TipoComprobante } from '../domain/types';
 import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
 import { DATOS } from '../store';
@@ -9,10 +9,10 @@ import { DetalleComprobante } from '../components/DetalleComprobante';
 const TIPOS: Array<TipoComprobante | 'TODOS'> = ['TODOS', 'CC', 'RC', 'CE', 'NC', 'DS'];
 
 export function Comprobantes(props: VistaProps) {
-  const { empresa, estado, filtros, toast } = props;
+  const { empresa, estado, filtros, setFiltros, toast } = props;
   const [tipo, setTipo] = useState<TipoComprobante | 'TODOS'>('TODOS');
   const [q, setQ] = useState('');
-  const [detalle, setDetalle] = useState<Comprobante | null>(null);
+  const [detalleSeleccionado, setDetalleSeleccionado] = useState<Comprobante | null>(null);
 
   const lista = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -28,11 +28,9 @@ export function Comprobantes(props: VistaProps) {
       .sort((a, b) => (a.fecha === b.fecha ? b.consecutivo - a.consecutivo : b.fecha.localeCompare(a.fecha)));
   }, [estado.comprobantes, empresa.id, tipo, q]);
 
-  useEffect(() => {
-    if (!filtros.comprobanteId) return;
-    const c = estado.comprobantes.find((x) => x.id === filtros.comprobanteId);
-    if (c) setDetalle(c);
-  }, [filtros.comprobanteId, estado.comprobantes]);
+  const detalle =
+    detalleSeleccionado ??
+    (filtros.comprobanteId ? estado.comprobantes.find((x) => x.id === filtros.comprobanteId) ?? null : null);
 
   const total = lista.reduce((s, c) => s + c.totalDebito, 0);
 
@@ -96,7 +94,7 @@ export function Comprobantes(props: VistaProps) {
             </thead>
             <tbody>
               {lista.map((c) => (
-                <tr key={c.id} onClick={() => setDetalle(c)}>
+                <tr key={c.id} onClick={() => setDetalleSeleccionado(c)}>
                   <td>{fmtFecha(c.fecha)}</td>
                   <td>
                     <span className={`comp-tag comp-${c.tipo}`}>{c.tipo}</span>
@@ -126,7 +124,10 @@ export function Comprobantes(props: VistaProps) {
         comprobante={detalle}
         terceros={DATOS.terceros}
         unidades={DATOS.units.filter((u) => u.empresaId === empresa.id)}
-        onClose={() => setDetalle(null)}
+        onClose={() => {
+          setDetalleSeleccionado(null);
+          if (filtros.comprobanteId) setFiltros({ comprobanteId: undefined });
+        }}
       />
     </div>
   );

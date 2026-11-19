@@ -16,6 +16,8 @@ interface BandejaProps extends VistaProps {
   onAcarrear: (pre: PreAsiento) => void;
 }
 
+let manualLineSeq = 0;
+
 export function Bandeja({
   empresa,
   estado,
@@ -50,6 +52,7 @@ export function Bandeja({
   const totales = totalesLineas(pre.lineas);
 
   const actualizar = (id: string, patch: Partial<Linea>) => {
+    if (bloqueado) return;
     acciones.cambiarLineasPreAsiento(
       pre.id,
       pre.lineas.map((l) => (l.id === id ? { ...l, ...patch } : l)),
@@ -57,10 +60,11 @@ export function Bandeja({
   };
 
   const agregarLinea = () => {
+    if (bloqueado) return;
     acciones.cambiarLineasPreAsiento(pre.id, [
       ...pre.lineas,
       {
-        id: `manual-${Date.now().toString(36)}`,
+        id: `manual-${++manualLineSeq}`,
         cuenta: '513505',
         descripcion: '',
         debito: 0,
@@ -70,6 +74,7 @@ export function Bandeja({
   };
 
   const quitarLinea = (id: string) => {
+    if (bloqueado) return;
     acciones.cambiarLineasPreAsiento(
       pre.id,
       pre.lineas.filter((l) => l.id !== id),
@@ -160,7 +165,11 @@ export function Bandeja({
               {pre.lineas.map((l) => (
                 <tr key={l.id}>
                   <td className="cell-cuenta">
-                    <select value={l.cuenta} onChange={(e) => actualizar(l.id, { cuenta: e.target.value })}>
+                    <select
+                      value={l.cuenta}
+                      disabled={bloqueado}
+                      onChange={(e) => actualizar(l.id, { cuenta: e.target.value })}
+                    >
                       {CUENTAS.map((c) => (
                         <option key={c.codigo} value={c.codigo}>
                           {c.codigo} · {c.nombre}
@@ -172,6 +181,7 @@ export function Bandeja({
                   <td>
                     <input
                       value={l.descripcion}
+                      disabled={bloqueado}
                       placeholder="Descripción del movimiento"
                       onChange={(e) => actualizar(l.id, { descripcion: e.target.value })}
                     />
@@ -180,6 +190,7 @@ export function Bandeja({
                     <input
                       type="number"
                       min={0}
+                      disabled={bloqueado}
                       value={l.debito || ''}
                       placeholder="0"
                       onChange={(e) => {
@@ -192,6 +203,7 @@ export function Bandeja({
                     <input
                       type="number"
                       min={0}
+                      disabled={bloqueado}
                       value={l.credito || ''}
                       placeholder="0"
                       onChange={(e) => {
@@ -201,7 +213,12 @@ export function Bandeja({
                     />
                   </td>
                   <td>
-                    <button className="icon-btn" onClick={() => quitarLinea(l.id)} title="Quitar línea">
+                    <button
+                      className="icon-btn"
+                      disabled={bloqueado}
+                      onClick={() => quitarLinea(l.id)}
+                      title="Quitar línea"
+                    >
                       <Icon name="x" size={14} />
                     </button>
                   </td>
@@ -209,7 +226,7 @@ export function Bandeja({
               ))}
             </tbody>
           </table>
-          <button className="add-line" onClick={agregarLinea}>
+          <button className="add-line" disabled={bloqueado} onClick={agregarLinea}>
             <Icon name="plus" size={14} /> Agregar línea
           </button>
         </div>

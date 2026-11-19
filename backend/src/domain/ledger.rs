@@ -72,6 +72,10 @@ pub fn validate_entry(draft: &EntryDraft, puc: &[LedgerAccount]) -> ValidationRe
                 l.account
             ));
         }
+        if !l.debit.is_finite() || !l.credit.is_finite() {
+            errors.push(format!("Línea {n}: los montos deben ser números válidos."));
+            continue;
+        }
         if l.debit < 0.0 || l.credit < 0.0 {
             errors.push(format!("Línea {n}: los montos no pueden ser negativos."));
         }
@@ -89,7 +93,7 @@ pub fn validate_entry(draft: &EntryDraft, puc: &[LedgerAccount]) -> ValidationRe
 
     total_debit = (total_debit * 100.0).round() / 100.0;
     total_credit = (total_credit * 100.0).round() / 100.0;
-    let difference = (total_debit - total_credit * 1.0 * 100.0).round() / 100.0;
+    let difference = ((total_debit - total_credit) * 100.0).round() / 100.0;
     if difference.abs() > 0.009 {
         errors.push(format!(
             "El comprobante está descuadrado: débitos {:.2} ≠ créditos {:.2}.",
@@ -142,70 +146,55 @@ pub fn carry_forward(pre: &PreEntryDraft, third_parties: &[ThirdParty]) -> Optio
         return None;
     }
 
-    let base: f64 = pre
+    let base_lines: Vec<Line> = pre
         .lines
         .iter()
         .filter(|l| {
-            l.debit > 0.0
-                && l.account != "135515"
-                && l.account != "111005"
-                && l.account != "220505"
-                && l.account != "236540"
-                && l.account != "236801"
-                && l.account != "236705"
+            l.debit.is_finite()
+                && l.debit > 0.0
+                && ![
+                    "135515", "111005", "220505", "236540", "236801", "236705", "417035",
+                ]
+                .contains(&l.account.as_str())
         })
-        .map(|l| l.debit)
-        .sum();
-    let iva: f64 = pre
+        .cloned()
+        .collect();
+    let iva_lines: Vec<Line> = pre
         .lines
         .iter()
-        .filter(|l| l.account == "135515")
-        .map(|l| l.debit)
-        .sum();
-    if base <= 0.0 {
+        .filter(|l| l.debit.is_finite() && l.debit > 0.0 && l.account == "135515")
+        .cloned()
+        .collect();
+
+    let base_raw: f64 = base_lines.iter().map(|l| l.debit).sum();
+    let iva_raw: f64 = iva_lines.iter().map(|l| l.debit).sum();
+    if base_raw <= 0.0 {
         return None;
     }
 
-    let base = round_cop(base);
-    let iva = round_cop(iva);
-    let rf = round_cop(base * tp.retefuente_pct / 100.0);
-    let ri = round_cop(base * tp.reteica_pct / 100.0);
-    let riva = round_cop(iva * tp.reteiva_pct / 100.0);
-    let neto = base + iva - rf - ri - riva;
-
-    let mut out: Vec<Line> = Vec::new();
-    // Gastos/costos base
-    for l in pre.lines.iter().filter(|l| l.debit > 0.0 && l.account != "135515") {
-        if ["220505", "236540", "236801", "236705", "111005", "417035"].contains(&l.account.as_str()) {
-            continue;
-        }
-        out.push(l.clone());
+    let rf = round_cop(base_raw * tp.retefuente_pct / 100.0);
+    let ri = round_cop(base_raw * tp.reteica_pct / 100.0);
+    let riva = round_cop(iva_raw * tp.reteiva_pct / 100.0);
+    let neto = ((base_raw + iva_raw - rf - ri - riva) * 100.0).round() / 100.0;
+    if neto < 0.0 {
+        return None;
     }
-    // IVA
-    if let Some(iva_line) = pre.lines.iter().find(|l| l.account == "135515") {
-        out.push(iva_line.clone());
-    } else if iva > 0.0 {
+
+    let mut out: Vec<Line> = Vec::with_capacity(base_lines.len() + iva_lines.len() + 4);
+    out.extend(base_lines);
+    out.extend(iva_lines);
+
+    if neto > 0.0 {
         out.push(Line {
-            account: "135515".into(),
-            description: "IVA descontable".into(),
-            debit: iva,
-            credit: 0.0,
-            third_party_id: None,
+            account: "220505".into(),
+            description: "Cuenta por pagar".into(),
+            debit: 0.0,
+            credit: neto,
+            third_party_id: Some(tp.id.clone()),
             unit_id: None,
             rubric_id: None,
         });
     }
-    // Neto por pagar
-    out.push(Line {
-        account: "220505".into(),
-        description: "Cuenta por pagar".into(),
-        debit: 0.0,
-        credit: neto,
-        third_party_id: Some(tp.id.clone()),
-        unit_id: None,
-        rubric_id: None,
-    });
-    // Retenciones
     if rf > 0.0 {
         out.push(Line {
             account: "236540".into(),
@@ -260,8 +249,8 @@ pub fn carry_forward(pre: &PreEntryDraft, third_parties: &[ThirdParty]) -> Optio
         applied: true,
         detail,
         totals: Totals {
-            debit: base + iva,
-            credit: neto + rf + ri + riva,
+            debit: ((base_raw + iva_raw) * 100.0).round() / 100.0,
+            credit: ((neto + rf + ri + riva) * 100.0).round() / 100.0,
             net_payable: neto,
         },
         lines: out,
@@ -286,11 +275,18 @@ pub fn trial_balance_preview(
             m.1 += l.credit;
         }
     }
+    let mut accounts: HashSet<String> = req.opening_balances.keys().cloned().collect();
+    accounts.extend(movement.keys().cloned());
+
     let mut rows = Vec::new();
     let mut net_signed = 0.0_f64;
-    for (acc, (d, c)) in movement {
-        let n = nature.get(acc.as_str()).copied().unwrap_or("D");
+    for acc in accounts {
+        let (d, c) = movement.get(&acc).copied().unwrap_or((0.0, 0.0));
         let opening = req.opening_balances.get(&acc).copied().unwrap_or(0.0);
+        if opening.abs() < 1e-9 && d == 0.0 && c == 0.0 {
+            continue;
+        }
+        let n = nature.get(acc.as_str()).copied().unwrap_or("D");
         let balance = if n == "D" { opening + d - c } else { opening + c - d };
         net_signed += if n == "D" { balance } else { -balance };
         rows.push(serde_json::json!({
@@ -310,4 +306,161 @@ pub fn trial_balance_preview(
         "net_signed": net_signed,
         "rows": rows
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{AppState, BalanceRequest};
+
+    fn line(account: &str, debit: f64, credit: f64) -> Line {
+        Line {
+            account: account.into(),
+            description: format!("Mov {account}"),
+            debit,
+            credit,
+            third_party_id: None,
+            unit_id: None,
+            rubric_id: None,
+        }
+    }
+
+    fn draft(lines: Vec<Line>) -> EntryDraft {
+        EntryDraft {
+            company_id: "altavista".into(),
+            period: "2026-11".into(),
+            entry_type: "CC".into(),
+            date: "2026-11-12".into(),
+            description: "Prueba".into(),
+            lines,
+        }
+    }
+
+    #[test]
+    fn validate_entry_balanced_ok() {
+        let app = AppState::demo();
+        let d = draft(vec![
+            line("513505", 1_000_000.0, 0.0),
+            line("220505", 0.0, 1_000_000.0),
+        ]);
+        let res = validate_entry(&d, &app.puc);
+        assert!(res.ok, "errors: {:?}", res.errors);
+        assert_eq!(res.difference, 0.0);
+        assert_eq!(res.total_debit, 1_000_000.0);
+        assert_eq!(res.total_credit, 1_000_000.0);
+    }
+
+    #[test]
+    fn validate_entry_rejects_unbalanced_negative_zero_both_sides_unknown_and_single_line() {
+        let app = AppState::demo();
+
+        let single = validate_entry(&draft(vec![line("513505", 100.0, 0.0)]), &app.puc);
+        assert!(!single.ok);
+
+        let unbalanced = validate_entry(
+            &draft(vec![
+                line("513505", 1_000.0, 0.0),
+                line("220505", 0.0, 900.0),
+            ]),
+            &app.puc,
+        );
+        assert!(!unbalanced.ok);
+
+        let negative = validate_entry(
+            &draft(vec![
+                line("513505", -100.0, 0.0),
+                line("220505", 0.0, -100.0),
+            ]),
+            &app.puc,
+        );
+        assert!(!negative.ok);
+
+        let both_sides = validate_entry(
+            &draft(vec![
+                line("513505", 500.0, 500.0),
+                line("220505", 0.0, 0.0),
+            ]),
+            &app.puc,
+        );
+        assert!(!both_sides.ok);
+
+        let unknown = validate_entry(
+            &draft(vec![
+                line("999999", 500.0, 0.0),
+                line("220505", 0.0, 500.0),
+            ]),
+            &app.puc,
+        );
+        assert!(!unknown.ok);
+    }
+
+    #[test]
+    fn carry_forward_balances_on_round_and_non_round_100_invoices() {
+        let app = AppState::demo();
+
+        let round_pre = PreEntryDraft {
+            company_id: "altavista".into(),
+            third_party_id: Some("prov-atlas".into()),
+            description: "Vigilancia".into(),
+            lines: vec![
+                line("513505", 10_000_000.0, 0.0),
+                line("135515", 1_900_000.0, 0.0),
+                line("220505", 0.0, 11_900_000.0),
+            ],
+        };
+        let res1 = carry_forward(&round_pre, &app.third_parties).expect("round carry_forward");
+        let v1 = validate_entry(&draft(res1.lines), &app.puc);
+        assert!(v1.ok, "errors: {:?}", v1.errors);
+
+        let non_round_pre = PreEntryDraft {
+            company_id: "altavista".into(),
+            third_party_id: Some("prov-atlas".into()),
+            description: "Factura no múltiplo de 100".into(),
+            lines: vec![
+                line("513505", 1_250_350.0, 0.0),
+                line("135515", 237_566.5, 0.0),
+                line("220505", 0.0, 1_487_916.5),
+            ],
+        };
+        let res2 = carry_forward(&non_round_pre, &app.third_parties).expect("non-round carry_forward");
+        let v2 = validate_entry(&draft(res2.lines), &app.puc);
+        assert!(v2.ok, "errors: {:?}", v2.errors);
+        assert!((res2.totals.debit - res2.totals.credit).abs() < 0.01);
+    }
+
+    #[test]
+    fn trial_balance_includes_opening_only_accounts_and_balances() {
+        let app = AppState::demo();
+        let mut opening = HashMap::new();
+        opening.insert("111005".to_string(), 5_000_000.0);
+        opening.insert("310505".to_string(), 5_000_000.0);
+
+        let req = BalanceRequest {
+            company_id: "altavista".into(),
+            period: "2026-11".into(),
+            opening_balances: opening,
+            entries: vec![draft(vec![
+                line("513505", 200_000.0, 0.0),
+                line("220505", 0.0, 200_000.0),
+            ])],
+        };
+
+        let out = trial_balance_preview(&req, &app.puc);
+        assert_eq!(out["balanced"], serde_json::json!(true));
+        let rows = out["rows"].as_array().expect("rows array");
+        assert!(rows.iter().any(|r| r["account"] == "310505" && r["balance"] == 5_000_000.0));
+        assert!(rows.iter().any(|r| r["account"] == "111005" && r["balance"] == 5_000_000.0));
+    }
+
+    #[test]
+    fn entry_hash_deterministic() {
+        let d = draft(vec![
+            line("513505", 100_000.0, 0.0),
+            line("220505", 0.0, 100_000.0),
+        ]);
+        let h1 = entry_hash(&d);
+        let h2 = entry_hash(&d);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 8);
+    }
 }

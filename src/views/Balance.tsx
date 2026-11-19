@@ -17,7 +17,12 @@ export function Balance(props: VistaProps) {
     () =>
       TIPOS_CUENTA.map((tipo) => {
         const filas = balance.filas.filter((f) => f.tipo === tipo);
-        return { tipo, filas, total: filas.reduce((s, f) => s + f.saldoActual, 0) };
+        const natTipo = tipo === 'ACTIVO' || tipo === 'GASTO' ? 'D' : 'C';
+        const total = filas.reduce(
+          (s, f) => s + (f.naturaleza === natTipo ? f.saldoActual : -f.saldoActual),
+          0,
+        );
+        return { tipo, filas, total };
       }).filter((g) => g.filas.length > 0),
     [balance],
   );

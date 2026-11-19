@@ -14,7 +14,7 @@ export function Presupuesto(props: VistaProps) {
   );
   const resumen = useMemo(
     () => resumenPeriodo(estado.comprobantes, empresa, unidadesDe(estado), DATOS.terceros, estado.periodo),
-    [estado.comprobantes, empresa, estado.periodo, estado.activeCompanyId],
+    [estado, empresa],
   );
 
   const presupuesto = filas.reduce((s, f) => s + f.presupuesto, 0);

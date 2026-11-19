@@ -58,12 +58,16 @@ function cargar(): EstadoApp {
 let state = cargar();
 const listeners = new Set<() => void>();
 
-function persist(next: EstadoApp) {
+function persistLocal(next: EstadoApp) {
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {
     // Almacenamiento no disponible: se continúa en memoria.
   }
+}
+
+function persist(next: EstadoApp) {
+  persistLocal(next);
   if (apiEnabled) {
     void saveState(next).catch((e) => {
       // La UI sigue operando con estado local; se registra el fallo.
@@ -263,10 +267,14 @@ export const acciones = {
     };
     const comp: Comprobante = { ...base, hash: hashDe(base) };
     const cerrados = state.periodosCerrados[empresa.id] ?? [];
+    const ops: string[] = [];
+    if (lineas.some((l) => l.cuenta === '516005')) ops.push('depreciación');
+    if (lineas.some((l) => l.cuenta === '519905')) ops.push('provisión de cartera');
+    if (lineas.some((l) => l.cuenta === '111010')) ops.push('traslado al fondo');
     const ev = evento(
       'Contador demo',
       'Ejecutó cierre mensual',
-      `${fmtPeriodo(periodo)}: depreciación, provisión y traslado de fondo.`,
+      `${fmtPeriodo(periodo)}: ${ops.join(', ')}.`,
     );
     commit({
       ...state,
@@ -287,7 +295,7 @@ export const acciones = {
         const boot = await fetchBootstrap();
         DATOS = boot.datos ?? DATOS;
         state = nextEstado;
-        persist(state);
+        persistLocal(state);
         listeners.forEach((l) => l());
         return;
       } catch (e) {
@@ -312,7 +320,7 @@ async function bootstrapFromApi() {
     if (boot?.datos) DATOS = boot.datos;
     if (boot?.estado) {
       state = boot.estado;
-      persist(state);
+      persistLocal(state);
       listeners.forEach((l) => l());
     }
   } catch (e) {
