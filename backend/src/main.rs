@@ -15,9 +15,9 @@ use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
     BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CreateEntryRequest,
-    CreatePucAccountRequest, Health, LedgerAccount, UpdateCompanySettingsRequest,
-    UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest, UpsertThirdPartyRequest,
-    UpsertUnitRequest, ValidationResult, VoidEntryRequest,
+    CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
+    UpdateCompanySettingsRequest, UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest,
+    UpsertThirdPartyRequest, UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
 use error::ApiError;
 use repo::{memory::MemoryRepo, postgres::PostgresRepo, Store};
@@ -123,7 +123,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/ledger/preview", post(preview_entry))
         .route("/api/v1/pre-entries/carry-forward", post(carry_forward))
         .route("/api/v1/balance", post(balance_preview))
-        // Endpoints transaccionales Bloque B
+        // Endpoints transaccionales Bloque B + ingesta pre-asientos
+        .route("/api/v1/pre-entries", post(create_pre_entry))
         .route("/api/v1/pre-entries/:id/lines", put(update_pre_entry_lines))
         .route("/api/v1/pre-entries/:id/approve", post(approve_pre_entry))
         .route("/api/v1/pre-entries/:id/reject", post(reject_pre_entry))
@@ -340,6 +341,23 @@ async fn balance_preview(
 ) -> Result<Json<Value>, ApiError> {
     let puc = state.store.list_puc(Some(&req.company_id)).await?;
     Ok(Json(ledger::trial_balance_preview(&req, &puc)))
+}
+
+async fn create_pre_entry(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreatePreEntryRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&req.company_id, &[Role::Contador, Role::Administrador])?;
+    let out = state
+        .store
+        .create_pre_entry(req, &ctx.actor_label())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(out).unwrap_or_else(|_| json!({}))),
+    ))
 }
 
 async fn update_pre_entry_lines(
@@ -736,6 +754,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rej_res.status(), StatusCode::OK);
+
+        // 3b. Submit a new draft pre-entry (201 PENDIENTE) and reject unbalanced (422)
+        let draft_tp = boot["datos"]["terceros"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["empresaId"].is_null() || t["empresaId"] == "altavista")
+            .expect("altavista or global third party in bootstrap")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let draft_ok = json!({
+            "companyId": "altavista",
+            "period": "2026-11",
+            "entryType": "CC",
+            "date": "2026-11-18",
+            "agent": "AGENTE_IA_EVE",
+            "terceroId": draft_tp,
+            "description": "Pre-asiento radicado por agente Eve",
+            "lines": [
+                { "cuenta": "519510", "descripcion": "Insumos", "debito": 120000, "credito": 0 },
+                { "cuenta": "220505", "descripcion": "Por pagar", "debito": 0, "credito": 120000 }
+            ],
+            "notes": ["Borrador generado desde agente Eve"]
+        });
+        let draft_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/pre-entries")
+                    .header("content-type", "application/json")
+                    .body(Body::from(draft_ok.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(draft_res.status(), StatusCode::CREATED);
+        let draft_body = json_body(draft_res).await;
+        assert_eq!(draft_body["preAsiento"]["estado"], "PENDIENTE");
+
+        let draft_bad = json!({
+            "companyId": "altavista",
+            "period": "2026-11",
+            "entryType": "CC",
+            "date": "2026-11-18",
+            "terceroId": draft_tp,
+            "description": "Pre-asiento descuadrado",
+            "lines": [
+                { "cuenta": "519510", "descripcion": "Insumos", "debito": 120000, "credito": 0 },
+                { "cuenta": "220505", "descripcion": "Por pagar", "debito": 0, "credito": 80000 }
+            ]
+        });
+        let draft_bad_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/pre-entries")
+                    .header("content-type", "application/json")
+                    .body(Body::from(draft_bad.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(draft_bad_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
         // 4. Create manual entry (valid, unbalanced -> 422, closed period -> 409)
         let manual = json!({

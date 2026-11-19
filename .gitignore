@@ -36,4 +36,8 @@ scripts/*.cjs
 # Documentos locales
 contabilida proyecto lucas gemini.pdf
 
+# Eve artifacts
+.eve/
+.output/
+
 

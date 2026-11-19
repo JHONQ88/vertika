@@ -5,16 +5,16 @@ use crate::auth::AuthUser;
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
     ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
-    ClosePeriodResult, CreateEntryRequest, CreatePucAccountRequest, FrontendAuditoria,
-    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
-    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
-    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
-    UpsertUnitRequest, VoidEntryResult,
+    ClosePeriodResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
+    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
+    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
+    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty,
+    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 pub enum Store {
@@ -83,6 +83,17 @@ impl Store {
         match self {
             Store::Memory(r) => r.list_third_parties(company_id).await,
             Store::Postgres(r) => r.list_third_parties(company_id).await,
+        }
+    }
+
+    pub async fn create_pre_entry(
+        &self,
+        req: CreatePreEntryRequest,
+        actor: &str,
+    ) -> Result<CreatePreEntryResult, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_pre_entry(req, actor).await,
+            Store::Postgres(r) => r.create_pre_entry(req, actor).await,
         }
     }
 
@@ -652,4 +663,66 @@ pub fn closing_audit_detail(period: &str, lines: &[FrontendLinea]) -> String {
         ops.push("traslado al fondo");
     }
     format!("{period}: {}.", ops.join(", "))
+}
+
+pub fn validate_create_pre_entry_input(req: &CreatePreEntryRequest) -> Result<(String, String, String), ApiError> {
+    let entry_type = req.entry_type.trim().to_uppercase();
+    if !["CC", "RC", "CE", "NC", "DS"].contains(&entry_type.as_str()) {
+        return Err(ApiError::unprocessable(
+            "El tipo de comprobante debe ser CC, RC, CE, NC o DS.",
+        ));
+    }
+    let description = req.description.trim().to_string();
+    if description.is_empty() {
+        return Err(ApiError::unprocessable(
+            "La descripción del pre-asiento es obligatoria.",
+        ));
+    }
+    NaiveDate::parse_from_str(req.date.trim(), "%Y-%m-%d").map_err(|_| {
+        ApiError::BadRequest(format!("Fecha inválida '{}'; usa YYYY-MM-DD.", req.date))
+    })?;
+    let agent_raw = req.agent.trim();
+    let agent: String = if agent_raw.is_empty() {
+        "AGENTE_IA_EVE".into()
+    } else {
+        agent_raw.chars().take(60).collect()
+    };
+    Ok((entry_type, description, agent))
+}
+
+pub fn build_pre_entry_document(
+    req: &CreatePreEntryRequest,
+    total_debit: Decimal,
+    tp_name: &str,
+    tp_nit: &str,
+    doc_ref: &str,
+) -> Value {
+    if let Some(doc @ Value::Object(map)) = &req.document {
+        if map.contains_key("clase") && map.contains_key("numero") {
+            return doc.clone();
+        }
+    }
+    let clase = match req.entry_type.trim().to_uppercase().as_str() {
+        "RC" => "RECIBO",
+        "DS" => "SOPORTE",
+        _ => "FACTURA",
+    };
+    json!({
+        "clase": clase,
+        "numero": doc_ref,
+        "emisor": tp_name,
+        "nit": tp_nit,
+        "fecha": req.date.trim(),
+        "items": [
+            {
+                "descripcion": req.description.trim(),
+                "cantidad": 1,
+                "valorUnitario": total_debit,
+            }
+        ],
+        "subtotal": total_debit,
+        "iva": Decimal::ZERO,
+        "total": total_debit,
+        "retenciones": [],
+    })
 }

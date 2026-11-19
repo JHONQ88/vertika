@@ -1348,6 +1348,15 @@ export const acciones = {
     DATOS = buildSeed();
     commitLocal(estadoInicial());
   },
+
+  async sincronizar() {
+    const prevCompany = state.activeCompanyId;
+    const prevPeriodo = state.periodo;
+    await bootstrapFromApi();
+    if (DATOS.companies.some((c) => c.id === prevCompany)) {
+      commitLocal({ ...state, activeCompanyId: prevCompany, periodo: prevPeriodo });
+    }
+  },
 };
 
 export function exportarEstado(): string {

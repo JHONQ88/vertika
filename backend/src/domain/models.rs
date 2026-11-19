@@ -222,6 +222,60 @@ pub struct UpdatePreEntryLinesRequest {
     pub lineas: Vec<FrontendLinea>,
 }
 
+fn default_tipo_cc() -> String {
+    "CC".into()
+}
+
+fn default_agent_eve() -> String {
+    "AGENTE_IA_EVE".into()
+}
+
+fn default_confianza() -> Decimal {
+    Decimal::from(92)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePreEntryRequest {
+    #[serde(rename = "companyId", alias = "company_id", alias = "empresaId")]
+    pub company_id: String,
+    #[serde(alias = "periodo")]
+    pub period: String,
+    #[serde(
+        rename = "entryType",
+        alias = "entry_type",
+        alias = "tipo",
+        default = "default_tipo_cc"
+    )]
+    pub entry_type: String,
+    #[serde(alias = "fecha")]
+    pub date: String,
+    #[serde(alias = "agente", default = "default_agent_eve")]
+    pub agent: String,
+    #[serde(default = "default_confianza")]
+    pub confianza: Decimal,
+    #[serde(rename = "terceroId", alias = "third_party_id")]
+    pub tercero_id: String,
+    #[serde(rename = "unidadId", alias = "unit_id", default)]
+    pub unidad_id: Option<String>,
+    #[serde(rename = "rubroId", alias = "rubric_id", default)]
+    pub rubro_id: Option<String>,
+    #[serde(alias = "descripcion")]
+    pub description: String,
+    #[serde(alias = "documento", default)]
+    pub document: Option<Value>,
+    #[serde(alias = "lineas")]
+    pub lines: Vec<FrontendLinea>,
+    #[serde(alias = "notas", default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePreEntryResult {
+    #[serde(rename = "preAsiento")]
+    pub pre_asiento: FrontendPreAsiento,
+    pub auditoria: FrontendAuditoria,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntryRequest {
     #[serde(rename = "companyId", alias = "company_id")]

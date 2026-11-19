@@ -6,6 +6,7 @@ import { fmtPeriodo } from './domain/format';
 import { FKeyBar, Sidebar, Topbar } from './components/Shell';
 import { AyudaModal, CommandPalette, EmpresasModal, PeriodosModal } from './components/Overlays';
 import { AuthModal } from './components/AuthModal';
+import { CopilotoEveModal } from './components/CopilotoEveModal';
 import { ToastStack } from './components/ui';
 import { MODO_COUNT, type FiltrosVista, type Toast, type ToastData, type ViewKey, type VistaProps } from './ui-types';
 import { Bandeja } from './views/Bandeja';
@@ -18,7 +19,7 @@ import { Maestros } from './views/Maestros';
 import { Cierre } from './views/Cierre';
 import { Ajustes } from './views/Ajustes';
 
-type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | 'auth' | null;
+type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | 'auth' | 'eve' | null;
 
 export default function App() {
   const estado = useEstado();
@@ -256,6 +257,7 @@ export default function App() {
         onPeriodo={() => setOverlay('periodos')}
         onAyuda={() => setOverlay('ayuda')}
         onAuth={() => setOverlay('auth')}
+        onCopiloto={() => setOverlay('eve')}
       />
 
       <div className="body">
@@ -295,6 +297,14 @@ export default function App() {
       {overlay === 'periodos' && <PeriodosModal estado={estado} onClose={() => setOverlay(null)} />}
       {overlay === 'ayuda' && <AyudaModal onClose={() => setOverlay(null)} />}
       <AuthModal open={overlay === 'auth'} onClose={() => setOverlay(null)} toast={toast} />
+      {overlay === 'eve' && (
+        <CopilotoEveModal
+          empresa={empresa}
+          periodo={estado.periodo}
+          vistaActual={view}
+          onClose={() => setOverlay(null)}
+        />
+      )}
 
       <ToastStack toasts={toasts} />
     </div>

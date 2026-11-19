@@ -2,17 +2,19 @@ use crate::auth::{self, AuthUser, CompanyRole, Role, DEMO_PASSWORD, DEMO_USERS};
 use crate::db::Db;
 use crate::domain::{
     demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
-    ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest, CreatePucAccountRequest,
-    FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp,
-    FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad,
-    LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty, UpdateCompanySettingsRequest,
-    UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
+    ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest, CreatePreEntryRequest,
+    CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante,
+    FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro,
+    FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult,
+    ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest,
+    VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
-    build_billing_lines, build_reversal_lines, closing_audit_detail, compute_unit_overdue_balances,
-    last_day_of_period, next_period_ym, normalize_frontend_lines, origin_from_agent,
-    parse_seed_bundle, validate_and_hash_frontend_lines,
+    build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
+    compute_unit_overdue_balances, last_day_of_period, next_period_ym, normalize_frontend_lines,
+    origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
+    validate_create_pre_entry_input,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -1358,6 +1360,166 @@ impl PostgresRepo {
         .await?;
         tx.commit().await?;
         Ok(ev)
+    }
+
+    pub async fn create_pre_entry(
+        &self,
+        req: CreatePreEntryRequest,
+        actor: &str,
+    ) -> Result<CreatePreEntryResult, ApiError> {
+        let (entry_type, description, agent) = validate_create_pre_entry_input(&req)?;
+        let fecha = parse_date(req.date.trim())?;
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, &req.company_id).await?;
+        Self::ensure_period_open_tx(&mut tx, &company, &req.period).await?;
+
+        let tp_row = sqlx::query(
+            "SELECT id, COALESCE(clave_externa, id::text) AS ext_id, nombre, documento, dv
+               FROM terceros
+              WHERE (clave_externa = $1 OR id::text = $1)
+                AND (copropiedad_id IS NULL OR copropiedad_id = $2)
+              LIMIT 1",
+        )
+        .bind(req.tercero_id.trim())
+        .bind(company.uuid)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!("Tercero '{}' no encontrado.", req.tercero_id))
+        })?;
+        let tp_uuid: Uuid = tp_row.try_get("id")?;
+        let tp_ext: String = tp_row.try_get("ext_id")?;
+        let tp_name: String = tp_row.try_get("nombre")?;
+        let tp_doc: String = tp_row.try_get("documento")?;
+        let tp_dv: Option<String> = tp_row.try_get("dv")?;
+        let tp_nit = match tp_dv.filter(|s| !s.is_empty()) {
+            Some(dv) => format!("{tp_doc}-{dv}"),
+            None => tp_doc,
+        };
+
+        let (unit_uuid, unit_ext) =
+            match req.unidad_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(uid) => {
+                    let ur = sqlx::query(
+                        "SELECT id, COALESCE(clave_externa, id::text) AS ext_id
+                           FROM unidades_inmobiliarias
+                          WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+                          LIMIT 1",
+                    )
+                    .bind(company.uuid)
+                    .bind(uid)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(format!(
+                            "Unidad '{uid}' no encontrada en {}.",
+                            company.nombre_corto
+                        ))
+                    })?;
+                    (Some(ur.try_get::<Uuid, _>("id")?), Some(ur.try_get::<String, _>("ext_id")?))
+                }
+                None => (None, None),
+            };
+
+        let (rubro_uuid, rubro_ext) =
+            match req.rubro_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(rid) => {
+                    let rr = sqlx::query(
+                        "SELECT id, COALESCE(clave_externa, id::text) AS ext_id
+                           FROM rubros_presupuestales
+                          WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+                          LIMIT 1",
+                    )
+                    .bind(company.uuid)
+                    .bind(rid)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(format!(
+                            "Rubro '{rid}' no encontrado en {}.",
+                            company.nombre_corto
+                        ))
+                    })?;
+                    (Some(rr.try_get::<Uuid, _>("id")?), Some(rr.try_get::<String, _>("ext_id")?))
+                }
+                None => (None, None),
+            };
+
+        let puc = Self::fetch_company_puc_tx(&mut tx, company.uuid).await?;
+        let normalized_lines = normalize_frontend_lines(req.lines.clone(), "l");
+        let (total_debit, _, _) = validate_and_hash_frontend_lines(
+            &company.slug,
+            &req.period,
+            &entry_type,
+            req.date.trim(),
+            &description,
+            &normalized_lines,
+            &puc,
+        )?;
+
+        let pid = Uuid::new_v4();
+        let simple = pid.simple().to_string();
+        let ext_id = format!("pre-{}-{}", company.slug, &simple[..12]);
+        let doc_ref = format!("IA-{}", simple[..6].to_uppercase());
+        let doc_json = build_pre_entry_document(&req, total_debit, &tp_name, &tp_nit, &doc_ref);
+        let lineas_json = serde_json::to_value(&normalized_lines).unwrap_or_else(|_| json!([]));
+        let notas_json = serde_json::to_value(&req.notes).unwrap_or_else(|_| json!([]));
+
+        sqlx::query(
+            "INSERT INTO pre_asientos (
+                id, clave_externa, copropiedad_id, periodo, tipo_documento, fecha,
+                agente, confianza, tercero_id, unidad_id, rubro_id, descripcion,
+                documento_json, lineas_json, estado, notas
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'PENDIENTE',$15)",
+        )
+        .bind(pid)
+        .bind(&ext_id)
+        .bind(company.uuid)
+        .bind(&req.period)
+        .bind(&entry_type)
+        .bind(fecha)
+        .bind(&agent)
+        .bind(req.confianza)
+        .bind(tp_uuid)
+        .bind(unit_uuid)
+        .bind(rubro_uuid)
+        .bind(&description)
+        .bind(&doc_json)
+        .bind(&lineas_json)
+        .bind(&notas_json)
+        .execute(&mut *tx)
+        .await?;
+
+        let ev = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Radicó pre-asiento IA",
+            &format!("{agent} · {description}"),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(CreatePreEntryResult {
+            pre_asiento: FrontendPreAsiento {
+                id: ext_id,
+                empresa_id: company.slug,
+                periodo: req.period,
+                tipo: entry_type,
+                fecha: fecha.format("%Y-%m-%d").to_string(),
+                agente: agent,
+                confianza: req.confianza,
+                tercero_id: tp_ext,
+                unidad_id: unit_ext,
+                rubro_id: rubro_ext,
+                descripcion: description,
+                documento: doc_json,
+                lineas: normalized_lines,
+                estado: "PENDIENTE".into(),
+                notas: req.notes,
+            },
+            auditoria: ev,
+        })
     }
 
     pub async fn create_entry(

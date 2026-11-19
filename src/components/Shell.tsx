@@ -16,6 +16,7 @@ export function Topbar({
   onPeriodo,
   onAyuda,
   onAuth,
+  onCopiloto,
 }: {
   empresa: { nombreCorto: string; sigla: string; color: string; nit: string };
   pendientes: number;
@@ -27,6 +28,7 @@ export function Topbar({
   onPeriodo: () => void;
   onAyuda: () => void;
   onAuth?: () => void;
+  onCopiloto?: () => void;
 }) {
   const modeLabel =
     syncStatus?.mode === 'postgres'
@@ -87,11 +89,17 @@ export function Topbar({
             </Badge>
           </span>
         )}
-        <div className="ia-status" title="Agentes de IA activos">
+        <button
+          type="button"
+          className="ia-status"
+          onClick={onCopiloto}
+          style={{ cursor: 'pointer' }}
+          title="Abrir Copiloto Contable Eve IA"
+        >
           <span className="pulse" />
-          <span>IA activa</span>
+          <span>Copiloto Eve IA</span>
           {pendientes > 0 && <span className="ia-count">{pendientes}</span>}
-        </div>
+        </button>
         <button className="icon-btn" onClick={onAyuda} title="Ayuda (F1)">
           <Icon name="help" size={18} />
         </button>

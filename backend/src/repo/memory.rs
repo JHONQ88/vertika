@@ -2,16 +2,18 @@ use crate::auth::{self, AuthUser, CompanyRole, DEMO_PASSWORD, DEMO_USERS};
 use crate::domain::{
     demo_puc, ledger, third_parties_from_seed, ApproveResult, BalanceRequest, BillPeriodRequest,
     BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest,
-    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
-    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty,
-    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
+    CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
+    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
+    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
+    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
-    build_billing_lines, build_reversal_lines, closing_audit_detail, compute_cartera_total,
-    compute_traslado_fondo, compute_unit_overdue_balances, last_day_of_period, next_period_ym,
-    normalize_frontend_lines, origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
+    build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
+    compute_cartera_total, compute_traslado_fondo, compute_unit_overdue_balances,
+    last_day_of_period, next_period_ym, normalize_frontend_lines, origin_from_agent,
+    parse_seed_bundle, validate_and_hash_frontend_lines, validate_create_pre_entry_input,
 };
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -349,6 +351,122 @@ impl MemoryRepo {
         g.estado.auditoria.insert(0, ev.clone());
         g.estado.auditoria.truncate(200);
         Ok(ev)
+    }
+
+    pub async fn create_pre_entry(
+        &self,
+        req: CreatePreEntryRequest,
+        actor: &str,
+    ) -> Result<CreatePreEntryResult, ApiError> {
+        let (entry_type, description, agent) = validate_create_pre_entry_input(&req)?;
+        let mut g = self.inner.write().await;
+        let company = Self::find_company(&g.datos, &req.company_id)?.clone();
+        Self::ensure_period_open(&g.estado, &company, &req.period)?;
+
+        let tp = g
+            .datos
+            .terceros
+            .iter()
+            .find(|t| {
+                t.id == req.tercero_id
+                    && t.empresa_id
+                        .as_deref()
+                        .is_none_or(|e| e == company.id)
+            })
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!("Tercero '{}' no encontrado.", req.tercero_id))
+            })?;
+
+        let unidad_id = match req.unidad_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(uid) => {
+                if !g
+                    .datos
+                    .units
+                    .iter()
+                    .any(|u| u.id == uid && u.empresa_id == company.id)
+                {
+                    return Err(ApiError::BadRequest(format!(
+                        "Unidad '{}' no encontrada en {}.",
+                        uid, company.nombre_corto
+                    )));
+                }
+                Some(uid.to_string())
+            }
+            None => None,
+        };
+
+        let rubro_id = match req.rubro_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(rid) => {
+                if !g
+                    .datos
+                    .rubros
+                    .iter()
+                    .any(|r| r.id == rid && r.empresa_id == company.id)
+                {
+                    return Err(ApiError::BadRequest(format!(
+                        "Rubro '{}' no encontrado en {}.",
+                        rid, company.nombre_corto
+                    )));
+                }
+                Some(rid.to_string())
+            }
+            None => None,
+        };
+
+        let normalized_lines = normalize_frontend_lines(req.lines.clone(), "l");
+        let (total_debit, _, _) = validate_and_hash_frontend_lines(
+            &company.id,
+            &req.period,
+            &entry_type,
+            req.date.trim(),
+            &description,
+            &normalized_lines,
+            &g.puc,
+        )?;
+
+        let short = &Uuid::new_v4().simple().to_string()[..12];
+        let ext_id = format!("pre-{}-{}", company.id, short);
+        let doc_ref = format!("IA-{}", short[6..].to_uppercase());
+        let tp_nit = match &tp.dv {
+            Some(dv) if !dv.is_empty() => format!("{}-{dv}", tp.documento),
+            _ => tp.documento.clone(),
+        };
+        let document = build_pre_entry_document(&req, total_debit, &tp.nombre, &tp_nit, &doc_ref);
+
+        let pre = FrontendPreAsiento {
+            id: ext_id.clone(),
+            empresa_id: company.id.clone(),
+            periodo: req.period.clone(),
+            tipo: entry_type,
+            fecha: req.date.trim().to_string(),
+            agente: agent.clone(),
+            confianza: req.confianza,
+            tercero_id: tp.id,
+            unidad_id,
+            rubro_id,
+            descripcion: description.clone(),
+            documento: document,
+            lineas: normalized_lines,
+            estado: "PENDIENTE".into(),
+            notas: req.notes,
+        };
+        let ev = Self::make_audit(
+            &company.id,
+            actor,
+            "Radicó pre-asiento IA",
+            format!("{agent} · {description}"),
+        );
+
+        g.pre_status.insert(ext_id, "PENDIENTE".into());
+        g.estado.pre_asientos.push(pre.clone());
+        g.estado.auditoria.insert(0, ev.clone());
+        g.estado.auditoria.truncate(200);
+
+        Ok(CreatePreEntryResult {
+            pre_asiento: pre,
+            auditoria: ev,
+        })
     }
 
     pub async fn create_entry(
