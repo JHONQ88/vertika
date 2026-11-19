@@ -1,4 +1,4 @@
-use crate::auth::{self, AuthUser, CompanyRole, Role, DEMO_PASSWORD, DEMO_USERS};
+use crate::auth::{self, AuthUser, CompanyRole, CreateUserRequest, Role, DEMO_PASSWORD, DEMO_USERS};
 use crate::db::Db;
 use crate::domain::{
     demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
@@ -38,9 +38,11 @@ struct CompanyRow {
 }
 
 impl PostgresRepo {
-    pub async fn init(db: Db, seed: Value) -> Result<Self, ApiError> {
+    pub async fn init(db: Db, seed: Value, seed_demo: bool) -> Result<Self, ApiError> {
         let repo = Self { db, seed };
-        repo.seed_relational_if_empty().await?;
+        if seed_demo {
+            repo.seed_relational_if_empty().await?;
+        }
         Ok(repo)
     }
 
@@ -2000,6 +2002,125 @@ impl PostgresRepo {
             email: user_row.try_get("email")?,
             nombre: user_row.try_get("nombre")?,
             rol: primary_role,
+            roles,
+        })
+    }
+
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), ApiError> {
+        let next = new_password.trim();
+        if next.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La nueva contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+
+        let row = sqlx::query(
+            "SELECT id, password_hash
+               FROM usuarios
+              WHERE id::text = $1 OR LOWER(email) = LOWER($1)",
+        )
+        .bind(user_id.trim())
+        .fetch_optional(&self.db.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Usuario no encontrado.".into()))?;
+
+        let uid: Uuid = row.try_get("id")?;
+        let stored_hash: String = row.try_get("password_hash")?;
+        if !auth::verify_password(current_password, &stored_hash) {
+            return Err(ApiError::Unauthorized("La contraseña actual no coincide.".into()));
+        }
+
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        let next_hash = auth::hash_password(next, &salt);
+        sqlx::query("UPDATE usuarios SET password_hash = $2 WHERE id = $1")
+            .bind(uid)
+            .bind(next_hash)
+            .execute(&self.db.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+        let email = req.email.trim().to_lowercase();
+        let nombre = req.nombre.trim().to_string();
+        let password = req.password.trim();
+        if !email.contains('@') {
+            return Err(ApiError::unprocessable("Ingresa un correo electrónico válido."));
+        }
+        if nombre.is_empty() {
+            return Err(ApiError::unprocessable("El nombre del usuario es obligatorio."));
+        }
+        if password.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+
+        let mut tx = self.db.pool.begin().await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM usuarios WHERE LOWER(email) = LOWER($1))",
+        )
+        .bind(&email)
+        .fetch_one(&mut *tx)
+        .await?;
+        if exists {
+            return Err(ApiError::Conflict(
+                "Ya existe un usuario con ese correo.".into(),
+            ));
+        }
+
+        let uid = Uuid::new_v4();
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        let pwd_hash = auth::hash_password(password, &salt);
+        sqlx::query(
+            "INSERT INTO usuarios (id, email, nombre, password_hash, activo)
+             VALUES ($1, $2, $3, $4, TRUE)",
+        )
+        .bind(uid)
+        .bind(&email)
+        .bind(&nombre)
+        .bind(pwd_hash)
+        .execute(&mut *tx)
+        .await?;
+
+        let comp_rows = sqlx::query(
+            "SELECT id, COALESCE(slug, id::text) AS slug
+               FROM copropiedades
+              ORDER BY created_at, slug",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut roles = Vec::with_capacity(comp_rows.len());
+        for cr in comp_rows {
+            let cid: Uuid = cr.try_get("id")?;
+            let slug: String = cr.try_get("slug")?;
+            sqlx::query(
+                "INSERT INTO usuario_copropiedad_roles (usuario_id, copropiedad_id, rol)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(uid)
+            .bind(cid)
+            .bind(req.rol.as_str())
+            .execute(&mut *tx)
+            .await?;
+            roles.push(CompanyRole {
+                company_id: slug,
+                role: req.rol,
+            });
+        }
+        tx.commit().await?;
+
+        Ok(AuthUser {
+            id: uid.to_string(),
+            email,
+            nombre,
+            rol: req.rol,
             roles,
         })
     }

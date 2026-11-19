@@ -13,10 +13,11 @@ Plataforma para contabilidad de copropiedades (propiedad horizontal) en Colombia
 | Motor contable de dominio | ✅ Implementado | `src/domain/` (frontend) y `backend/src/domain/` (Rust): validación determinista, `Decimal`, hash SHA-256, acarreo de retenciones, balance, cierre |
 | Reportes ESAL, Ley 675 y DIAN | ✅ Implementado | Estado de Situación Financiera y Estado de Resultados ESAL (HTML), Paz y Salvo Ley 675 (HTML), Certificados de Retención (HTML), Formato 1001 DIAN (XML), CSV de cartera/balance/presupuesto |
 | Persistencia relacional PostgreSQL 16 | ✅ Implementado | Migraciones `001`–`004` con `sqlx::migrate!`, triggers ACID diferidos de partida doble, bloqueo de periodos cerrados e inmutabilidad del ledger |
-| Autenticación JWT, RBAC y RLS | ✅ Implementado | JWT HS256 (`POST /api/v1/auth/login`), roles (`CONTADOR`, `ADMINISTRADOR`, `REVISOR_FISCAL`, `CONSEJO`) y Row-Level Security (`tenant_isolation_*`) en PostgreSQL |
+| Autenticación JWT, RBAC y RLS | ✅ Implementado | JWT HS256 (`/api/v1/auth/login`, `change-password`, `users`), roles (`CONTADOR`, `ADMINISTRADOR`, `REVISOR_FISCAL`, `CONSEJO`), `SEED_DEMO=false` y Row-Level Security (`tenant_isolation_*`) |
+| Copiloto IA Eve (`vercel/eve`) | ✅ Implementado | Agente en `agent/` (`eve v1.1.0`) con 7 herramientas conectadas al motor Rust, aprobación humana obligatoria antes de radicar pre-asientos (`POST /api/v1/pre-entries`), canal autenticado por JWT HS256 + `vercel.ts` |
 | Enlace frontend ↔ backend | ✅ Implementado | Con `VITE_API_URL`, la consola opera contra los endpoints transaccionales Rust manteniendo `localStorage` como caché/respaldo y modo offline |
 | CI + Contenedor Backend | ✅ Implementado | GitHub Actions (`frontend` + `backend` contra PostgreSQL 16 real) y `backend/Dockerfile` + `docker-compose.yml` (`--profile full`) |
-| Radicación de agentes e integraciones | ⏳ Pendiente | `POST /api/v1/pre-entries`, agente IA real (p. ej. Eve), ingesta XML UBL 2.1 DIAN / OCR, recaudo NFC / Bre-B / Wompi y gestión productiva de usuarios |
+| Conectores externos DIAN / NFC | ⏳ Pendiente | Ingesta automática XML UBL 2.1 DIAN / OCR de PDFs, recaudo real Bre-B / Wompi / NFC en campo |
 
 ## Requisitos
 
@@ -89,7 +90,12 @@ El botón de usuario en la barra superior abre el selector de sesión (`AuthModa
 | `REVISOR_FISCAL` | Solo lectura, auditoría, reportes y exportaciones | `revisor@vertika.co` (Marta Lucía Peña) |
 | `CONSEJO` | Solo lectura, auditoría, reportes y exportaciones | `consejo@vertika.co` (Andrea Gómez) |
 
-> Para exigir `Authorization: Bearer <token>` en todas las rutas `/api/v1/*` en entorno servidor, define `AUTH_REQUIRED=true` y un `AUTH_SECRET` robusto.
+> Para entorno productivo exige `AUTH_REQUIRED=true`, `SEED_DEMO=false` (bloquea semilla demo y `POST /api/v1/reset`), un `AUTH_SECRET` robusto compartido con el canal `agent/channels/eve.ts` y `CORS_ORIGINS` restringido al dominio web. Las rutas `/api/v1/auth/change-password` y `/api/v1/auth/users` permiten rotar contraseñas y crear usuarios reales desde la consola.
+
+### 4. Copiloto IA Eve y despliegue en Vercel
+
+- El agente en `agent/` se comunica con la consola mediante `CopilotoEveModal.tsx` y protege su endpoint HTTP (`agent/channels/eve.ts`) verificando el mismo JWT HS256 emitido por Rust (`AUTH_SECRET`) junto con `vercelOidc()` y `localDev()`.
+- `vercel.ts` compone la app Vite (`web`) junto con los servicios generados de Eve (`withEve`). Define `VERTIKA_API_URL`, `AUTH_SECRET`, `AI_GATEWAY_API_KEY` (u otro proveedor soportado) y `VITE_API_URL` en el proyecto de Vercel antes de desplegar.
 
 ## Flujo operativo y vistas
 

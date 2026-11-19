@@ -1,4 +1,4 @@
-use crate::auth::{self, AuthUser, CompanyRole, DEMO_PASSWORD, DEMO_USERS};
+use crate::auth::{self, AuthUser, CompanyRole, CreateUserRequest, DEMO_PASSWORD, DEMO_USERS};
 use crate::domain::{
     demo_puc, ledger, third_parties_from_seed, ApproveResult, BalanceRequest, BillPeriodRequest,
     BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest,
@@ -102,6 +102,82 @@ impl MemoryRepo {
             return Err(ApiError::Unauthorized("Credenciales inválidas.".into()));
         }
         Ok(found.user.clone())
+    }
+
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), ApiError> {
+        let next = new_password.trim();
+        if next.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La nueva contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+        let mut g = self.inner.write().await;
+        let found = g
+            .users
+            .iter_mut()
+            .find(|u| u.user.id == user_id || u.user.email.eq_ignore_ascii_case(user_id))
+            .ok_or_else(|| ApiError::NotFound("Usuario no encontrado.".into()))?;
+        if !auth::verify_password(current_password, &found.password_hash) {
+            return Err(ApiError::Unauthorized("La contraseña actual no coincide.".into()));
+        }
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        found.password_hash = auth::hash_password(next, &salt);
+        Ok(())
+    }
+
+    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+        let email = req.email.trim().to_lowercase();
+        let nombre = req.nombre.trim().to_string();
+        let password = req.password.trim();
+        if !email.contains('@') {
+            return Err(ApiError::unprocessable("Ingresa un correo electrónico válido."));
+        }
+        if nombre.is_empty() {
+            return Err(ApiError::unprocessable("El nombre del usuario es obligatorio."));
+        }
+        if password.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+
+        let mut g = self.inner.write().await;
+        if g.users
+            .iter()
+            .any(|u| u.user.email.eq_ignore_ascii_case(&email))
+        {
+            return Err(ApiError::Conflict(
+                "Ya existe un usuario con ese correo.".into(),
+            ));
+        }
+
+        let roles = g
+            .datos
+            .companies
+            .iter()
+            .map(|c| CompanyRole {
+                company_id: c.id.clone(),
+                role: req.rol,
+            })
+            .collect();
+        let user = AuthUser {
+            id: format!("usr-{}", Uuid::new_v4().simple()),
+            email,
+            nombre,
+            rol: req.rol,
+            roles,
+        };
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        g.users.push(StoredUser {
+            user: user.clone(),
+            password_hash: auth::hash_password(password, &salt),
+        });
+        Ok(user)
     }
 
     fn find_company<'a>(

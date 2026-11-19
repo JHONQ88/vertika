@@ -73,6 +73,24 @@ pub struct LoginResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePasswordRequest {
+    #[serde(alias = "current_password")]
+    pub current_password: String,
+    #[serde(alias = "new_password")]
+    pub new_password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateUserRequest {
+    pub email: String,
+    pub nombre: String,
+    pub password: String,
+    pub rol: Role,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JwtClaims {
     sub: String,
     email: String,

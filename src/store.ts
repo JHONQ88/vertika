@@ -22,11 +22,13 @@ import {
   apiEnabled,
   approvePreEntryApi,
   billPeriodApi,
+  changePasswordApi,
   closePeriodApi,
   createEntryApi,
   createPucAccountApi,
   createThirdPartyApi,
   createUnitApi,
+  createUserApi,
   fetchBootstrap,
   fetchPucApi,
   getAuthToken,
@@ -45,6 +47,7 @@ import {
   type BackendLedgerAccount,
   type CreateEntryPayload,
   type CreatePucPayload,
+  type CreateUserPayload,
   type UpsertThirdPartyPayload,
   type UpsertUnitPayload,
   type UserRole,
@@ -464,6 +467,56 @@ export const acciones = {
   cerrarSesion() {
     const def = defaultAuthSession();
     setAuthSession(def.user, null);
+  },
+
+  async cambiarPassword(currentPassword: string, newPassword: string): Promise<Resultado> {
+    if (!apiEnabled) {
+      return {
+        ok: false,
+        error: 'El cambio de contraseña requiere conectar la consola al backend Rust (VITE_API_URL).',
+      };
+    }
+    if (!authSession.token) {
+      return {
+        ok: false,
+        error: 'Inicia sesión con correo y contraseña para obtener un token JWT antes de cambiar tu clave.',
+      };
+    }
+    setSyncStatus({ syncing: true, lastError: null });
+    try {
+      await changePasswordApi(currentPassword, newPassword);
+      setSyncStatus({ syncing: false, lastError: null });
+      return { ok: true, detalle: 'Contraseña actualizada correctamente.' };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'No se pudo actualizar la contraseña.';
+      setSyncStatus({ syncing: false, lastError: msg });
+      return { ok: false, error: msg };
+    }
+  },
+
+  async crearUsuario(payload: CreateUserPayload): Promise<Resultado> {
+    if (!apiEnabled) {
+      return {
+        ok: false,
+        error: 'El alta de usuarios requiere conectar la consola al backend Rust (VITE_API_URL).',
+      };
+    }
+    if (!tienePermiso(authSession.user.rol, 'maestros')) {
+      return {
+        ok: false,
+        error: `El rol ${authSession.user.rol} no puede crear usuarios.`,
+      };
+    }
+    setSyncStatus({ syncing: true, lastError: null });
+    try {
+      const res = await createUserApi(payload);
+      setSyncStatus({ syncing: false, lastError: null });
+      return { ok: true, detalle: `${res.user.nombre} (${res.user.rol})` };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'No se pudo crear el usuario.';
+      setSyncStatus({ syncing: false, lastError: msg });
+      return { ok: false, error: msg };
+    }
   },
 
   cambiarEmpresa(id: string) {

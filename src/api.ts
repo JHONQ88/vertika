@@ -192,6 +192,30 @@ export async function meApi(): Promise<{ user: AuthUser }> {
   return request<{ user: AuthUser }>('/api/v1/auth/me');
 }
 
+export async function changePasswordApi(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>('/api/v1/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
+export interface CreateUserPayload {
+  email: string;
+  nombre: string;
+  password: string;
+  rol: UserRole;
+}
+
+export async function createUserApi(payload: CreateUserPayload): Promise<{ user: AuthUser }> {
+  return request<{ user: AuthUser }>('/api/v1/auth/users', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function fetchBootstrap(): Promise<BootstrapPayload> {
   return request<BootstrapPayload>('/api/v1/bootstrap');
 }

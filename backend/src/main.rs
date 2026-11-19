@@ -4,7 +4,7 @@ mod domain;
 mod error;
 mod repo;
 
-use auth::{LoginRequest, LoginResponse, Role};
+use auth::{ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, Role};
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
@@ -30,6 +30,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 struct AppState {
     store: Store,
     auth_required: bool,
+    seed_demo: bool,
 }
 
 impl AppState {
@@ -39,12 +40,15 @@ impl AppState {
         let auth_required = std::env::var("AUTH_REQUIRED")
             .ok()
             .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+        let seed_demo = !std::env::var("SEED_DEMO")
+            .ok()
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"));
         let database_url = std::env::var("DATABASE_URL").ok();
         let store = match database_url {
             Some(url) if !url.trim().is_empty() => match Db::connect(&url).await {
-                Ok(db) => match PostgresRepo::init(db, seed.clone()).await {
+                Ok(db) => match PostgresRepo::init(db, seed.clone(), seed_demo).await {
                     Ok(pg) => {
-                        tracing::info!("Conectado a PostgreSQL, migraciones y seed relacional listos");
+                        tracing::info!("Conectado a PostgreSQL, migraciones listas (seed_demo={seed_demo})");
                         Store::Postgres(pg)
                     }
                     Err(e) => {
@@ -62,6 +66,7 @@ impl AppState {
         Self {
             store,
             auth_required,
+            seed_demo,
         }
     }
 
@@ -72,11 +77,17 @@ impl AppState {
 
     #[cfg(test)]
     fn demo_for_tests_with_auth(auth_required: bool) -> Self {
+        Self::demo_for_tests_with_flags(auth_required, true)
+    }
+
+    #[cfg(test)]
+    fn demo_for_tests_with_flags(auth_required: bool, seed_demo: bool) -> Self {
         let seed: Value = serde_json::from_str(include_str!("../seed_bootstrap.json"))
             .expect("seed_bootstrap.json válido");
         Self {
             store: Store::Memory(MemoryRepo::new(seed).expect("seed válido")),
             auth_required,
+            seed_demo,
         }
     }
 }
@@ -115,6 +126,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/api/v1/auth/login", post(auth_login))
         .route("/api/v1/auth/me", get(auth_me))
+        .route("/api/v1/auth/change-password", post(auth_change_password))
+        .route("/api/v1/auth/users", post(auth_create_user))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/state", get(get_state).put(put_state))
         .route("/api/v1/reset", post(reset_state))
@@ -233,6 +246,30 @@ async fn auth_me(headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "user": ctx.user })))
 }
 
+async fn auth_change_password(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, true)?;
+    state
+        .store
+        .change_password(&ctx.user.id, &req.current_password, &req.new_password)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn auth_create_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador, Role::Administrador])?;
+    let user = state.store.create_user(req).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "user": user }))))
+}
+
 async fn bootstrap(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -263,6 +300,11 @@ async fn reset_state(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
+    if !state.seed_demo {
+        return Err(ApiError::Forbidden(
+            "El reinicio a datos demo está deshabilitado cuando SEED_DEMO=false.".into(),
+        ));
+    }
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
     ctx.require_any_role(&[Role::Contador])?;
     Ok(Json(state.store.reset().await?))
@@ -1536,6 +1578,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn user_management_and_seed_guard_work() {
+        let router_prod = build_router(Arc::new(AppState::demo_for_tests_with_flags(true, false)));
+
+        // SEED_DEMO=false blocks POST /api/v1/reset even before auth or as authenticated Contador
+        let tok_contador = login_as(&router_prod, "contador@vertika.co").await;
+        let blocked_reset = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/reset")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked_reset.status(), StatusCode::FORBIDDEN);
+
+        // CONSEJO cannot create users -> 403
+        let tok_consejo = login_as(&router_prod, "consejo@vertika.co").await;
+        let denied_user = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_consejo}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "asistente@vertika.co",
+                            "nombre": "Sofía",
+                            "password": "claveSegura2026",
+                            "rol": "ADMINISTRADOR"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_user.status(), StatusCode::FORBIDDEN);
+
+        // CONTADOR can create user -> 201
+        let created = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "asistente@vertika.co",
+                            "nombre": "Sofía",
+                            "password": "claveSegura2026",
+                            "rol": "ADMINISTRADOR"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // New user logs in with initial password, then changes it
+        let login_res = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "asistente@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_res.status(), StatusCode::OK);
+        let tok_new = json_body(login_res).await["token"].as_str().unwrap().to_string();
+
+        let chg = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/change-password")
+                    .header("authorization", format!("Bearer {tok_new}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "currentPassword": "claveSegura2026",
+                            "newPassword": "nuevaClave2026!"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chg.status(), StatusCode::OK);
+
+        // Old password fails, new password succeeds
+        let bad_login = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "asistente@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_login.status(), StatusCode::UNAUTHORIZED);
+
+        let good_login = router_prod
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "asistente@vertika.co", "password": "nuevaClave2026!" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(good_login.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn postgres_relational_lifecycle_if_configured() {
         let Ok(database_url) = std::env::var("DATABASE_URL") else {
             return;
@@ -1549,7 +1722,7 @@ mod tests {
         let db = Db::connect(&database_url)
             .await
             .expect("connect to postgres");
-        let pg = PostgresRepo::init(db.clone(), seed)
+        let pg = PostgresRepo::init(db.clone(), seed, true)
             .await
             .expect("init postgres repo");
         let _ = pg.reset().await.expect("reset postgres to seed");
@@ -1611,6 +1784,7 @@ mod tests {
         let router = build_router(Arc::new(AppState {
             store: Store::Postgres(pg),
             auth_required: false,
+            seed_demo: true,
         }));
         let h = router
             .clone()

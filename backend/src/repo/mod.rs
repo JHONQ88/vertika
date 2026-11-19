@@ -1,7 +1,7 @@
 pub mod memory;
 pub mod postgres;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, CreateUserRequest};
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
     ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
@@ -38,6 +38,25 @@ impl Store {
         match self {
             Store::Memory(r) => r.authenticate(email, password).await,
             Store::Postgres(r) => r.authenticate(email, password).await,
+        }
+    }
+
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), ApiError> {
+        match self {
+            Store::Memory(r) => r.change_password(user_id, current_password, new_password).await,
+            Store::Postgres(r) => r.change_password(user_id, current_password, new_password).await,
+        }
+    }
+
+    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_user(req).await,
+            Store::Postgres(r) => r.create_user(req).await,
         }
     }
 

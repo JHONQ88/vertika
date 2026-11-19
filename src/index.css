@@ -877,7 +877,7 @@ kbd {
 /* ── Bandeja ────────────────────────────────────────────────────────────── */
 .tray {
   display: grid;
-  grid-template-columns: 300px minmax(330px, 1fr) minmax(400px, 470px);
+  grid-template-columns: 260px minmax(280px, 0.85fr) minmax(520px, 1.35fr);
   gap: 12px;
   height: calc(100vh - 208px);
   min-height: 540px;
@@ -1049,6 +1049,10 @@ kbd {
   overflow: auto;
   padding: 4px 0;
 }
+.entry-table th,
+.entry-table td {
+  padding: 6px 6px;
+}
 .entry-table input,
 .entry-table select {
   width: 100%;
@@ -1074,7 +1078,7 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 .entry-table th:nth-child(1) {
-  width: 190px;
+  width: 155px;
 }
 .cell-cuenta small {
   display: block;
@@ -1152,6 +1156,7 @@ kbd {
   border-top: 1px solid var(--line);
   padding: 10px 14px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
@@ -1159,7 +1164,7 @@ kbd {
 }
 .entry-totales {
   display: flex;
-  gap: 18px;
+  gap: 14px;
 }
 .entry-totales small {
   display: block;

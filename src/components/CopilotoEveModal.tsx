@@ -3,6 +3,7 @@ import { useEveAgent } from 'eve/react';
 import { activeTurn, openInteractions } from 'eve/events';
 import type { Copropiedad } from '../domain/types';
 import { fmtPeriodo } from '../domain/format';
+import { getAuthToken } from '../api';
 import { acciones } from '../store';
 import { Badge, Btn, Modal } from './ui';
 
@@ -34,6 +35,10 @@ export function CopilotoEveModal({
 }) {
   const [input, setInput] = useState('');
   const agent = useEveAgent({
+    headers: (): Readonly<Record<string, string>> => {
+      const token = getAuthToken();
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    },
     prepareSend: (turn) => ({
       ...turn,
       clientContext: {

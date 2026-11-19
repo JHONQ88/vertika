@@ -1,15 +1,118 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { eveChannel } from "eve/channels/eve";
-import { localDev, placeholderAuth, vercelOidc } from "eve/channels/auth";
+import {
+  extractBearerToken,
+  localDev,
+  UnauthenticatedError,
+  vercelOidc,
+  withAuthChallenges,
+  type AuthFn,
+} from "eve/channels/auth";
+
+const DEFAULT_AUTH_SECRET = "vertika-dev-secret-change-in-prod";
+
+interface VertikaJwtClaims {
+  sub?: string;
+  email?: string;
+  nombre?: string;
+  rol?: string;
+  exp?: number;
+}
+
+function getAuthSecret(): string {
+  const configured = process.env.AUTH_SECRET?.trim();
+  return configured && configured.length > 0 ? configured : DEFAULT_AUTH_SECRET;
+}
+
+function verifyVertikaHs256Jwt(token: string): VertikaJwtClaims | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  if (!headerB64 || !payloadB64 || !signatureB64) return null;
+
+  let header: { alg?: string };
+  try {
+    header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8")) as {
+      alg?: string;
+    };
+  } catch {
+    return null;
+  }
+  if (header.alg !== "HS256") return null;
+
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const expectedSig = createHmac("sha256", getAuthSecret())
+    .update(signingInput)
+    .digest();
+  let providedSig: Buffer;
+  try {
+    providedSig = Buffer.from(signatureB64, "base64url");
+  } catch {
+    return null;
+  }
+  if (
+    providedSig.length !== expectedSig.length ||
+    !timingSafeEqual(providedSig, expectedSig)
+  ) {
+    return null;
+  }
+
+  let claims: VertikaJwtClaims;
+  try {
+    claims = JSON.parse(
+      Buffer.from(payloadB64, "base64url").toString("utf8"),
+    ) as VertikaJwtClaims;
+  } catch {
+    return null;
+  }
+
+  if (
+    typeof claims.sub !== "string" ||
+    claims.sub.trim() === "" ||
+    typeof claims.exp !== "number" ||
+    claims.exp < Math.floor(Date.now() / 1000)
+  ) {
+    return null;
+  }
+  return claims;
+}
+
+function vertikaJwtAuth(): AuthFn<Request> {
+  return withAuthChallenges(
+    (request) => {
+      const token = extractBearerToken(request.headers.get("authorization"));
+      if (!token) return null;
+
+      const claims = verifyVertikaHs256Jwt(token);
+      if (!claims) {
+        throw new UnauthenticatedError({
+          message: "Token JWT de Vértika inválido o expirado.",
+        });
+      }
+
+      return {
+        authenticator: "vertika-jwt",
+        principalId: claims.sub!,
+        principalType: "user",
+        attributes: {
+          email: String(claims.email ?? ""),
+          nombre: String(claims.nombre ?? ""),
+          rol: String(claims.rol ?? "CONTADOR"),
+        },
+      };
+    },
+    [{ scheme: "Bearer" }],
+  );
+}
 
 export default eveChannel({
   auth: [
-    // Lets the eve TUI and your Vercel deployments reach the deployed agent.
+    // Allows Eve CLI / TUI and Vercel deployments to reach the agent.
     vercelOidc(),
-    // Open on localhost for `eve dev` and the REPL; ignored in production.
+    // Verifies HS256 JWT tokens issued by Vértika's Rust backend (/api/v1/auth/login).
+    vertikaJwtAuth(),
+    // Open on localhost for `eve dev`; ignored in production.
     localDev(),
-    // This placeholder will not allow browser requests in production.
-    // Replace it with your app's auth provider, like Auth.js or Clerk,
-    // or use none() for a public demo.
-    placeholderAuth(),
   ],
 });

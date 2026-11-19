@@ -8,7 +8,7 @@
         "nombreCorto": "Altavista",
         "sigla": "ALV",
         "ciudad": "Bogotá D.C.",
-        "direccion": "Cra. 11 # 82-45 �� Torres A y B",
+        "direccion": "Cra. 11 # 82-45 · Torres A y B",
         "grupoNiif": 2,
         "fondoImprevistosPct": 1,
         "tasaMoraMensual": 1.5,
@@ -1091,7 +1091,7 @@
       },
       {
         "id": "prov-jardineria",
-        "nombre": "Josî Rodríguez Ԁ� Jardinero",
+        "nombre": "José Rodríguez — Jardinero",
         "tipo": "PROVEEDOR",
         "documento": "8.012.447",
         "email": "jrodriguez@correo.co",
@@ -1104,7 +1104,7 @@
       },
       {
         "id": "prov-contador",
-        "nombre": "Carlos Andrîs Mejía Ԁ� Contador",
+        "nombre": "Carlos Andrés Mejía — Contador",
         "tipo": "PROVEEDOR",
         "documento": "1.020.304.556",
         "email": "camejia@contador.co",
@@ -1117,7 +1117,7 @@
       },
       {
         "id": "prov-revisoria",
-        "nombre": "Marta Lucía Peña Ԁ� Revisora Fiscal",
+        "nombre": "Marta Lucía Peña — Revisora Fiscal",
         "tipo": "PROVEEDOR",
         "documento": "52.334.887",
         "email": "mlpena@revisoria.co",
@@ -1145,10 +1145,10 @@
       {
         "id": "t-altavista-0",
         "empresaId": "altavista",
-        "nombre": "Andrîs López Gómez",
+        "nombre": "Andrés López Gómez",
         "tipo": "PROPIETARIO",
         "documento": "10000000",
-        "email": "andrîs.lópez.gómez@correo.co",
+        "email": "andrés.lópez.gómez@correo.co",
         "telefono": "+57 310 555 0000",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1229,10 +1229,10 @@
       {
         "id": "t-altavista-5",
         "empresaId": "altavista",
-        "nombre": "Laura Pîrez Hernández",
+        "nombre": "Laura Pérez Hernández",
         "tipo": "PROPIETARIO",
         "documento": "10037565",
-        "email": "laura.pîrez.hernández@correo.co",
+        "email": "laura.pérez.hernández@correo.co",
         "telefono": "+57 315 555 0005",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1411,10 +1411,10 @@
       {
         "id": "t-altavista-15",
         "empresaId": "altavista",
-        "nombre": "Patricia Díaz Pîrez",
+        "nombre": "Patricia Díaz Pérez",
         "tipo": "PROPIETARIO",
         "documento": "10112695",
-        "email": "patricia.díaz.pîrez@correo.co",
+        "email": "patricia.díaz.pérez@correo.co",
         "telefono": "+57 315 555 0015",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1509,10 +1509,10 @@
       {
         "id": "t-altavista-21",
         "empresaId": "altavista",
-        "nombre": "Isabel Pîrez Hernández",
+        "nombre": "Isabel Pérez Hernández",
         "tipo": "PROPIETARIO",
         "documento": "10157773",
-        "email": "isabel.pîrez.hernández@correo.co",
+        "email": "isabel.pérez.hernández@correo.co",
         "telefono": "+57 311 555 0021",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1565,10 +1565,10 @@
       {
         "id": "t-colina-0",
         "empresaId": "colina",
-        "nombre": "Andrîs López Gómez",
+        "nombre": "Andrés López Gómez",
         "tipo": "PROPIETARIO",
         "documento": "10000000",
-        "email": "andrîs.lópez.gómez@correo.co",
+        "email": "andrés.lópez.gómez@correo.co",
         "telefono": "+57 310 555 0000",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1649,10 +1649,10 @@
       {
         "id": "t-colina-5",
         "empresaId": "colina",
-        "nombre": "Laura Pîrez Hernández",
+        "nombre": "Laura Pérez Hernández",
         "tipo": "PROPIETARIO",
         "documento": "10037565",
-        "email": "laura.pîrez.hernández@correo.co",
+        "email": "laura.pérez.hernández@correo.co",
         "telefono": "+57 315 555 0005",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1775,10 +1775,10 @@
       {
         "id": "t-plaza-norte-0",
         "empresaId": "plaza-norte",
-        "nombre": "Andrîs López Gómez",
+        "nombre": "Andrés López Gómez",
         "tipo": "PROPIETARIO",
         "documento": "10000000",
-        "email": "andrîs.lópez.gómez@correo.co",
+        "email": "andrés.lópez.gómez@correo.co",
         "telefono": "+57 310 555 0000",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -1859,10 +1859,10 @@
       {
         "id": "t-plaza-norte-5",
         "empresaId": "plaza-norte",
-        "nombre": "Laura Pîrez Hernández",
+        "nombre": "Laura Pérez Hernández",
         "tipo": "PROPIETARIO",
         "documento": "10037565",
-        "email": "laura.pîrez.hernández@correo.co",
+        "email": "laura.pérez.hernández@correo.co",
         "telefono": "+57 315 555 0005",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -2041,10 +2041,10 @@
       {
         "id": "t-plaza-norte-15",
         "empresaId": "plaza-norte",
-        "nombre": "Patricia Díaz Pîrez",
+        "nombre": "Patricia Díaz Pérez",
         "tipo": "PROPIETARIO",
         "documento": "10112695",
-        "email": "patricia.díaz.pîrez@correo.co",
+        "email": "patricia.díaz.pérez@correo.co",
         "telefono": "+57 315 555 0015",
         "ciudad": "Bogotá D.C.",
         "retefuentePct": 0,
@@ -3039,7 +3039,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L1t",
@@ -3104,7 +3104,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L1z",
@@ -3169,7 +3169,7 @@
         "fecha": "2026-09-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "L25",
@@ -3212,7 +3212,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L28",
@@ -3255,7 +3255,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L2b",
@@ -3305,7 +3305,7 @@
         "fecha": "2026-09-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L2f",
@@ -4067,7 +4067,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L4i",
@@ -4132,7 +4132,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L4o",
@@ -4197,7 +4197,7 @@
         "fecha": "2026-10-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "L4u",
@@ -4240,7 +4240,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "L4x",
@@ -4305,7 +4305,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L53",
@@ -4370,7 +4370,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L59",
@@ -4413,7 +4413,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L5c",
@@ -4463,7 +4463,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L5g",
@@ -5225,7 +5225,7 @@
         "fecha": "2026-11-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L7j",
@@ -5290,7 +5290,7 @@
         "fecha": "2026-11-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "L7p",
@@ -5355,7 +5355,7 @@
         "fecha": "2026-11-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L7v",
@@ -5420,7 +5420,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L81",
@@ -5470,7 +5470,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L85",
@@ -5918,7 +5918,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L9a",
@@ -5983,7 +5983,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L9g",
@@ -6048,12 +6048,12 @@
         "fecha": "2026-09-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "L9m",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 1716000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -6084,7 +6084,7 @@
         "fecha": "2026-09-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L9o",
@@ -6149,7 +6149,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L9u",
@@ -6192,7 +6192,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L9x",
@@ -6242,7 +6242,7 @@
         "fecha": "2026-09-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "La1",
@@ -6752,7 +6752,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lbc",
@@ -6817,7 +6817,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lbi",
@@ -6882,7 +6882,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Lbo",
@@ -6947,7 +6947,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lbu",
@@ -7012,7 +7012,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lc0",
@@ -7055,7 +7055,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Lc3",
@@ -7105,7 +7105,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Lc7",
@@ -7660,7 +7660,7 @@
         "fecha": "2026-11-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Ldn",
@@ -7725,12 +7725,12 @@
         "fecha": "2026-11-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Ldt",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 1716000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -7761,7 +7761,7 @@
         "fecha": "2026-11-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Ldv",
@@ -7804,7 +7804,7 @@
         "fecha": "2026-11-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Ldy",
@@ -7869,7 +7869,7 @@
         "fecha": "2026-11-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Le4",
@@ -7912,7 +7912,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Le7",
@@ -7962,7 +7962,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Leb",
@@ -8572,7 +8572,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lfy",
@@ -8637,7 +8637,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lg4",
@@ -8702,12 +8702,12 @@
         "fecha": "2026-09-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lga",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -8738,7 +8738,7 @@
         "fecha": "2026-09-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Lgc",
@@ -8781,7 +8781,7 @@
         "fecha": "2026-09-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lgf",
@@ -8846,7 +8846,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lgl",
@@ -8889,7 +8889,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Lgo",
@@ -9557,7 +9557,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lih",
@@ -9622,7 +9622,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lin",
@@ -9687,12 +9687,12 @@
         "fecha": "2026-10-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lit",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -9723,7 +9723,7 @@
         "fecha": "2026-10-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Liv",
@@ -9766,7 +9766,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Liy",
@@ -9831,7 +9831,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lj4",
@@ -9896,7 +9896,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lja",
@@ -9939,7 +9939,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Ljd",
@@ -9989,7 +9989,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Ljh",
@@ -10607,7 +10607,7 @@
         "fecha": "2026-11-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Ll4",
@@ -10672,12 +10672,12 @@
         "fecha": "2026-11-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lla",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -10708,7 +10708,7 @@
         "fecha": "2026-11-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Llc",
@@ -10751,7 +10751,7 @@
         "fecha": "2026-11-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Llf",
@@ -10816,7 +10816,7 @@
         "fecha": "2026-11-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lll",
@@ -10859,7 +10859,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Llo",
@@ -10909,7 +10909,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Lls",
@@ -11022,7 +11022,7 @@
         "confianza": 97.4,
         "terceroId": "prov-atlas",
         "rubroId": "altavista-r-VIG",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "FA-2026-11-00842",
@@ -11129,7 +11129,7 @@
         "confianza": 92.1,
         "terceroId": "prov-enel",
         "rubroId": "altavista-r-SPU",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "documento": {
           "clase": "FACTURA",
           "numero": "ENEL-8891203",
@@ -11138,7 +11138,7 @@
           "fecha": "2026-11-08",
           "items": [
             {
-              "descripcion": "Energía elîctrica",
+              "descripcion": "Energía eléctrica",
               "cantidad": 1,
               "valorUnitario": 3120400
             }
@@ -11153,7 +11153,7 @@
           {
             "id": "Lm5",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 3120400,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -11171,7 +11171,7 @@
         "estado": "PENDIENTE",
         "notas": [
           "OCR sobre PDF de servicios públicos",
-          "Rîgimen especial: sin IVA",
+          "Régimen especial: sin IVA",
           "Validación cruzada contra extracto"
         ]
       },
@@ -11185,7 +11185,7 @@
         "confianza": 89.6,
         "terceroId": "prov-eaab",
         "rubroId": "altavista-r-SPU",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "documento": {
           "clase": "FACTURA",
           "numero": "EAAB-55671",
@@ -11255,11 +11255,11 @@
         "confianza": 95,
         "terceroId": "prov-jardineria",
         "rubroId": "altavista-r-MAN",
-        "descripcion": "Documento soporte �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Documento soporte · José Rodríguez — Jardinero",
         "documento": {
           "clase": "SOPORTE",
           "numero": "DS-2026-118",
-          "emisor": "Josî Rodríguez Ԁ� Jardinero",
+          "emisor": "José Rodríguez — Jardinero",
           "nit": "8.012.447",
           "fecha": "2026-11-14",
           "items": [
@@ -11326,11 +11326,11 @@
         "confianza": 96.8,
         "terceroId": "prov-revisoria",
         "rubroId": "altavista-r-HON",
-        "descripcion": "Honorarios revisoría fiscal �� Marta Lucía Peña Ԁ� Revisora Fiscal",
+        "descripcion": "Honorarios revisoría fiscal · Marta Lucía Peña — Revisora Fiscal",
         "documento": {
           "clase": "FACTURA",
           "numero": "HON-2026-11-007",
-          "emisor": "Marta Lucía Peña Ԁ� Revisora Fiscal",
+          "emisor": "Marta Lucía Peña — Revisora Fiscal",
           "nit": "52.334.887",
           "fecha": "2026-11-10",
           "cufe": "CUFE-B0CB8B40",
@@ -11411,7 +11411,7 @@
         "confianza": 99.8,
         "terceroId": "t-altavista-7",
         "unidadId": "altavista-TorreA-402",
-        "descripcion": "Recaudo Torre A 402 �� Bre-B",
+        "descripcion": "Recaudo Torre A 402 · Bre-B",
         "documento": {
           "clase": "RECIBO",
           "numero": "BRB-20261105-0042",
@@ -11485,7 +11485,7 @@
         "confianza": 99.2,
         "terceroId": "t-altavista-22",
         "unidadId": "altavista-TorreB-601",
-        "descripcion": "Recaudo Torre B 601 �� PSE",
+        "descripcion": "Recaudo Torre B 601 · PSE",
         "documento": {
           "clase": "RECIBO",
           "numero": "PSE-20261106-0118",
@@ -11559,7 +11559,7 @@
         "confianza": 96.9,
         "terceroId": "prov-atlas",
         "rubroId": "colina-r-VIG",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "FA-2026-11-00211",
@@ -11665,7 +11665,7 @@
         "confianza": 93.7,
         "terceroId": "prov-elevadores",
         "rubroId": "colina-r-ASC",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "documento": {
           "clase": "FACTURA",
           "numero": "ELE-2026-11-0064",
@@ -11771,7 +11771,7 @@
         "confianza": 99.7,
         "terceroId": "t-colina-2",
         "unidadId": "colina-BloqueA-201",
-        "descripcion": "Recaudo Bloque A 201 �� Bre-B",
+        "descripcion": "Recaudo Bloque A 201 · Bre-B",
         "documento": {
           "clase": "RECIBO",
           "numero": "BRB-20261105-0019",
@@ -11831,7 +11831,7 @@
         "confianza": 94.2,
         "terceroId": "prov-limpieza",
         "rubroId": "plaza-norte-r-ASE",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "LIM-2026-11-0033",
@@ -11937,7 +11937,7 @@
         "confianza": 97.1,
         "terceroId": "prov-seguros",
         "rubroId": "plaza-norte-r-SEG",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "documento": {
           "clase": "FACTURA",
           "numero": "SEG-2026-11-0027",
@@ -12042,7 +12042,7 @@
         "confianza": 99.5,
         "terceroId": "t-plaza-norte-0",
         "unidadId": "plaza-norte-Etapa1-101",
-        "descripcion": "Recaudo Etapa 1 101 �� PSE",
+        "descripcion": "Recaudo Etapa 1 101 · PSE",
         "documento": {
           "clase": "RECIBO",
           "numero": "PSE-20261107-0066",
@@ -12109,7 +12109,7 @@
         "confianza": 97.4,
         "terceroId": "prov-atlas",
         "rubroId": "altavista-r-VIG",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "FA-2026-11-00842",
@@ -12216,7 +12216,7 @@
         "confianza": 92.1,
         "terceroId": "prov-enel",
         "rubroId": "altavista-r-SPU",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "documento": {
           "clase": "FACTURA",
           "numero": "ENEL-8891203",
@@ -12225,7 +12225,7 @@
           "fecha": "2026-11-08",
           "items": [
             {
-              "descripcion": "Energía elîctrica",
+              "descripcion": "Energía eléctrica",
               "cantidad": 1,
               "valorUnitario": 3120400
             }
@@ -12240,7 +12240,7 @@
           {
             "id": "Lm5",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 3120400,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -12258,7 +12258,7 @@
         "estado": "PENDIENTE",
         "notas": [
           "OCR sobre PDF de servicios públicos",
-          "Rîgimen especial: sin IVA",
+          "Régimen especial: sin IVA",
           "Validación cruzada contra extracto"
         ]
       },
@@ -12272,7 +12272,7 @@
         "confianza": 89.6,
         "terceroId": "prov-eaab",
         "rubroId": "altavista-r-SPU",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "documento": {
           "clase": "FACTURA",
           "numero": "EAAB-55671",
@@ -12342,11 +12342,11 @@
         "confianza": 95,
         "terceroId": "prov-jardineria",
         "rubroId": "altavista-r-MAN",
-        "descripcion": "Documento soporte �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Documento soporte · José Rodríguez — Jardinero",
         "documento": {
           "clase": "SOPORTE",
           "numero": "DS-2026-118",
-          "emisor": "Josî Rodríguez Ԁ� Jardinero",
+          "emisor": "José Rodríguez — Jardinero",
           "nit": "8.012.447",
           "fecha": "2026-11-14",
           "items": [
@@ -12413,11 +12413,11 @@
         "confianza": 96.8,
         "terceroId": "prov-revisoria",
         "rubroId": "altavista-r-HON",
-        "descripcion": "Honorarios revisoría fiscal �� Marta Lucía Peña Ԁ� Revisora Fiscal",
+        "descripcion": "Honorarios revisoría fiscal · Marta Lucía Peña — Revisora Fiscal",
         "documento": {
           "clase": "FACTURA",
           "numero": "HON-2026-11-007",
-          "emisor": "Marta Lucía Peña Ԁ� Revisora Fiscal",
+          "emisor": "Marta Lucía Peña — Revisora Fiscal",
           "nit": "52.334.887",
           "fecha": "2026-11-10",
           "cufe": "CUFE-B0CB8B40",
@@ -12498,7 +12498,7 @@
         "confianza": 99.8,
         "terceroId": "t-altavista-7",
         "unidadId": "altavista-TorreA-402",
-        "descripcion": "Recaudo Torre A 402 �� Bre-B",
+        "descripcion": "Recaudo Torre A 402 · Bre-B",
         "documento": {
           "clase": "RECIBO",
           "numero": "BRB-20261105-0042",
@@ -12572,7 +12572,7 @@
         "confianza": 99.2,
         "terceroId": "t-altavista-22",
         "unidadId": "altavista-TorreB-601",
-        "descripcion": "Recaudo Torre B 601 �� PSE",
+        "descripcion": "Recaudo Torre B 601 · PSE",
         "documento": {
           "clase": "RECIBO",
           "numero": "PSE-20261106-0118",
@@ -12646,7 +12646,7 @@
         "confianza": 96.9,
         "terceroId": "prov-atlas",
         "rubroId": "colina-r-VIG",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "FA-2026-11-00211",
@@ -12752,7 +12752,7 @@
         "confianza": 93.7,
         "terceroId": "prov-elevadores",
         "rubroId": "colina-r-ASC",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "documento": {
           "clase": "FACTURA",
           "numero": "ELE-2026-11-0064",
@@ -12858,7 +12858,7 @@
         "confianza": 99.7,
         "terceroId": "t-colina-2",
         "unidadId": "colina-BloqueA-201",
-        "descripcion": "Recaudo Bloque A 201 �� Bre-B",
+        "descripcion": "Recaudo Bloque A 201 · Bre-B",
         "documento": {
           "clase": "RECIBO",
           "numero": "BRB-20261105-0019",
@@ -12918,7 +12918,7 @@
         "confianza": 94.2,
         "terceroId": "prov-limpieza",
         "rubroId": "plaza-norte-r-ASE",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "documento": {
           "clase": "FACTURA",
           "numero": "LIM-2026-11-0033",
@@ -13024,7 +13024,7 @@
         "confianza": 97.1,
         "terceroId": "prov-seguros",
         "rubroId": "plaza-norte-r-SEG",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "documento": {
           "clase": "FACTURA",
           "numero": "SEG-2026-11-0027",
@@ -13129,7 +13129,7 @@
         "confianza": 99.5,
         "terceroId": "t-plaza-norte-0",
         "unidadId": "plaza-norte-Etapa1-101",
-        "descripcion": "Recaudo Etapa 1 101 �� PSE",
+        "descripcion": "Recaudo Etapa 1 101 · PSE",
         "documento": {
           "clase": "RECIBO",
           "numero": "PSE-20261107-0066",
@@ -13798,7 +13798,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L1t",
@@ -13863,7 +13863,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L1z",
@@ -13928,7 +13928,7 @@
         "fecha": "2026-09-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "L25",
@@ -13971,7 +13971,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L28",
@@ -14014,7 +14014,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L2b",
@@ -14064,7 +14064,7 @@
         "fecha": "2026-09-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L2f",
@@ -14826,7 +14826,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L4i",
@@ -14891,7 +14891,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L4o",
@@ -14956,7 +14956,7 @@
         "fecha": "2026-10-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "L4u",
@@ -14999,7 +14999,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "L4x",
@@ -15064,7 +15064,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L53",
@@ -15129,7 +15129,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L59",
@@ -15172,7 +15172,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L5c",
@@ -15222,7 +15222,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L5g",
@@ -15984,7 +15984,7 @@
         "fecha": "2026-11-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L7j",
@@ -16049,7 +16049,7 @@
         "fecha": "2026-11-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "L7p",
@@ -16114,7 +16114,7 @@
         "fecha": "2026-11-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L7v",
@@ -16179,7 +16179,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L81",
@@ -16229,7 +16229,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "L85",
@@ -16677,7 +16677,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "L9a",
@@ -16742,7 +16742,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "L9g",
@@ -16807,12 +16807,12 @@
         "fecha": "2026-09-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "L9m",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 1716000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -16843,7 +16843,7 @@
         "fecha": "2026-09-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "L9o",
@@ -16908,7 +16908,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "L9u",
@@ -16951,7 +16951,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "L9x",
@@ -17001,7 +17001,7 @@
         "fecha": "2026-09-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "La1",
@@ -17511,7 +17511,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lbc",
@@ -17576,7 +17576,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lbi",
@@ -17641,7 +17641,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Lbo",
@@ -17706,7 +17706,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lbu",
@@ -17771,7 +17771,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lc0",
@@ -17814,7 +17814,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Lc3",
@@ -17864,7 +17864,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Lc7",
@@ -18419,7 +18419,7 @@
         "fecha": "2026-11-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Ldn",
@@ -18484,12 +18484,12 @@
         "fecha": "2026-11-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Ldt",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 1716000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -18520,7 +18520,7 @@
         "fecha": "2026-11-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Ldv",
@@ -18563,7 +18563,7 @@
         "fecha": "2026-11-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Ldy",
@@ -18628,7 +18628,7 @@
         "fecha": "2026-11-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Le4",
@@ -18671,7 +18671,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Le7",
@@ -18721,7 +18721,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Leb",
@@ -19331,7 +19331,7 @@
         "fecha": "2026-09-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lfy",
@@ -19396,7 +19396,7 @@
         "fecha": "2026-09-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lg4",
@@ -19461,12 +19461,12 @@
         "fecha": "2026-09-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lga",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -19497,7 +19497,7 @@
         "fecha": "2026-09-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Lgc",
@@ -19540,7 +19540,7 @@
         "fecha": "2026-09-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lgf",
@@ -19605,7 +19605,7 @@
         "fecha": "2026-09-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lgl",
@@ -19648,7 +19648,7 @@
         "fecha": "2026-09-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Lgo",
@@ -20316,7 +20316,7 @@
         "fecha": "2026-10-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Lih",
@@ -20381,7 +20381,7 @@
         "fecha": "2026-10-03",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Aseo y cafetería �� Limpieza Total S.A.S.",
+        "descripcion": "Aseo y cafetería · Limpieza Total S.A.S.",
         "lineas": [
           {
             "id": "Lin",
@@ -20446,12 +20446,12 @@
         "fecha": "2026-10-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lit",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -20482,7 +20482,7 @@
         "fecha": "2026-10-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Liv",
@@ -20525,7 +20525,7 @@
         "fecha": "2026-10-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Liy",
@@ -20590,7 +20590,7 @@
         "fecha": "2026-10-12",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Póliza de áreas comunes �� Aseguradora del Norte S.A.",
+        "descripcion": "Póliza de áreas comunes · Aseguradora del Norte S.A.",
         "lineas": [
           {
             "id": "Lj4",
@@ -20655,7 +20655,7 @@
         "fecha": "2026-10-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lja",
@@ -20698,7 +20698,7 @@
         "fecha": "2026-10-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Ljd",
@@ -20748,7 +20748,7 @@
         "fecha": "2026-10-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Ljh",
@@ -21366,7 +21366,7 @@
         "fecha": "2026-11-02",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Vigilancia y seguridad �� Seguridad Atlas S.A.S.",
+        "descripcion": "Vigilancia y seguridad · Seguridad Atlas S.A.S.",
         "lineas": [
           {
             "id": "Ll4",
@@ -21431,12 +21431,12 @@
         "fecha": "2026-11-08",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Energía elîctrica �� Enel Colombia S.A. ESP",
+        "descripcion": "Energía eléctrica · Enel Colombia S.A. ESP",
         "lineas": [
           {
             "id": "Lla",
             "cuenta": "513525",
-            "descripcion": "Energía elîctrica",
+            "descripcion": "Energía eléctrica",
             "debito": 2340000,
             "credito": 0,
             "terceroId": "prov-enel",
@@ -21467,7 +21467,7 @@
         "fecha": "2026-11-09",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Acueducto y alcantarillado �� EAAB Esp",
+        "descripcion": "Acueducto y alcantarillado · EAAB Esp",
         "lineas": [
           {
             "id": "Llc",
@@ -21510,7 +21510,7 @@
         "fecha": "2026-11-05",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Mantenimiento de ascensores �� Elevadores Andinos Ltda.",
+        "descripcion": "Mantenimiento de ascensores · Elevadores Andinos Ltda.",
         "lineas": [
           {
             "id": "Llf",
@@ -21575,7 +21575,7 @@
         "fecha": "2026-11-14",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Jardinería y zonas verdes �� Josî Rodríguez Ԁ� Jardinero",
+        "descripcion": "Jardinería y zonas verdes · José Rodríguez — Jardinero",
         "lineas": [
           {
             "id": "Lll",
@@ -21618,7 +21618,7 @@
         "fecha": "2026-11-15",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Honorarios contaduría �� Carlos Andrîs Mejía Ԁ� Contador",
+        "descripcion": "Honorarios contaduría · Carlos Andrés Mejía — Contador",
         "lineas": [
           {
             "id": "Llo",
@@ -21668,7 +21668,7 @@
         "fecha": "2026-11-16",
         "estado": "ASENTADO",
         "origen": "AGENTE_IA_DIAN",
-        "descripcion": "Comisiones y gastos bancarios �� Banco de Bogotá",
+        "descripcion": "Comisiones y gastos bancarios · Banco de Bogotá",
         "lineas": [
           {
             "id": "Lls",
