@@ -9,24 +9,24 @@ Plataforma para contabilidad de copropiedades (propiedad horizontal) en Colombia
 
 | Componente | Estado | Detalle |
 | --- | --- | --- |
-| Consola del contador (frontend) | ✅ Implementado | Vite + React + TypeScript, 9 vistas, atajos de teclado, datos demo |
-| Motor contable de dominio | ✅ Implementado | `src/domain/` (frontend) y `backend/src/domain` (Rust): validación, balance, acarreo, reglas deterministas |
-| Persistencia local | ✅ Implementado | `localStorage` (`vertika.estado.v4`) como caché/respaldo |
-| Enlace frontend ↔ backend | ✅ Implementado | Si `VITE_API_URL` está definido, el frontend carga (`/api/v1/bootstrap`) y sincroniza estado (`PUT /api/v1/state`) con el backend |
-| Backend API (Rust) | ✅ Implementado (MVP) | Axum: bootstrap, estado, reset, validación, preview/hash, acarreo y balance preview |
-| Base de datos PostgreSQL | ✅ Integrado (opcional/activable) | `docker-compose.yml` + migraciones (`001_init.sql`, `002_estado_kv.sql`); con `DATABASE_URL` el backend persiste en `app_estado` |
-| Normalización completa del ledger en BD | 🟡 Parcial | Esquema relacional listo; persistencia operativa actual en JSON de estado (MVP) |
-| Integraciones reales (DIAN, recaudo, NFC, mensajería) | ⏳ Pendiente | Planeadas en arquitectura/roadmap |
+| Consola del contador (frontend) | ✅ Implementado | Vite 8 + React 19 + TypeScript 7, 9 vistas, atajos de teclado, creación/anulación de comprobantes, causación masiva, CRUD maestros/presupuesto/ajustes |
+| Motor contable de dominio | ✅ Implementado | `src/domain/` (frontend) y `backend/src/domain/` (Rust): validación determinista, `Decimal`, hash SHA-256, acarreo de retenciones, balance, cierre |
+| Reportes ESAL, Ley 675 y DIAN | ✅ Implementado | Estado de Situación Financiera y Estado de Resultados ESAL (HTML), Paz y Salvo Ley 675 (HTML), Certificados de Retención (HTML), Formato 1001 DIAN (XML), CSV de cartera/balance/presupuesto |
+| Persistencia relacional PostgreSQL 16 | ✅ Implementado | Migraciones `001`–`004` con `sqlx::migrate!`, triggers ACID diferidos de partida doble, bloqueo de periodos cerrados e inmutabilidad del ledger |
+| Autenticación JWT, RBAC y RLS | ✅ Implementado | JWT HS256 (`POST /api/v1/auth/login`), roles (`CONTADOR`, `ADMINISTRADOR`, `REVISOR_FISCAL`, `CONSEJO`) y Row-Level Security (`tenant_isolation_*`) en PostgreSQL |
+| Enlace frontend ↔ backend | ✅ Implementado | Con `VITE_API_URL`, la consola opera contra los endpoints transaccionales Rust manteniendo `localStorage` como caché/respaldo y modo offline |
+| CI + Contenedor Backend | ✅ Implementado | GitHub Actions (`frontend` + `backend` contra PostgreSQL 16 real) y `backend/Dockerfile` + `docker-compose.yml` (`--profile full`) |
+| Radicación de agentes e integraciones | ⏳ Pendiente | `POST /api/v1/pre-entries`, agente IA real (p. ej. Eve), ingesta XML UBL 2.1 DIAN / OCR, recaudo NFC / Bre-B / Wompi y gestión productiva de usuarios |
 
 ## Requisitos
 
-- **Frontend**: Node.js 18+ y npm
+- **Frontend**: Node.js 24+ y npm
 - **Backend**: [Rust](https://rustup.rs/) 1.75+ (`cargo`, `rustc`)
-- **Base de datos (opcional pero recomendada)**: Docker + PostgreSQL 16 (o PostgreSQL instalado)
+- **Base de datos / Contenedores (opcional en local)**: Docker + PostgreSQL 16
 
 ## Ejecución rápida
 
-### Frontend (consola del contador)
+### 1. Frontend (consola del contador)
 
 ```bash
 npm install
@@ -34,16 +34,16 @@ npm run dev
 ```
 
 Abre la URL que imprime Vite (por defecto `http://localhost:5173`).  
-Build y verificaciones:
+Verificaciones y build:
 
 ```bash
-npm run build   # TypeScript + build de producción
-npm run smoke   # prueba del dominio (partida doble, coeficientes, cartera, cierre)
-npm run render  # render de humo de todas las vistas
-npm run lint
+npm run lint    # oxlint (0 warnings, 0 errors)
+npm run build   # tsc -b && vite build
+npm run smoke   # pruebas del dominio (partida doble, coeficientes, cartera, cierre, reportes/XML/HTML)
+npm run render  # render SSR de humo de las 9 vistas y App completa
 ```
 
-### Backend Rust (API y motor determinista)
+### 2. Backend Rust (API, motor determinista y auth)
 
 ```bash
 cd backend
@@ -51,12 +51,13 @@ cp .env.example .env
 cargo run
 ```
 
-Servidor por defecto: `http://localhost:8080`. Ver detalles en [`backend/README.md`](backend/README.md).
+Sin `DATABASE_URL`, el servidor escucha en `http://localhost:8080` en modo `demo-memory` con el mismo contrato HTTP/RBAC que PostgreSQL.
 
-### Base de datos PostgreSQL (persistencia real)
+### 3. Con PostgreSQL 16 (y Docker completo)
+
+Solo base de datos (para correr `cargo run` o `cargo test` en tu máquina):
 
 ```bash
-# en la raíz del proyecto
 docker compose up -d db
 ```
 
@@ -64,42 +65,40 @@ Configura en `backend/.env`:
 
 ```env
 DATABASE_URL=postgres://vertika:vertika@localhost:5432/vertika
+AUTH_REQUIRED=false
+# AUTH_SECRET=cambia-este-secreto-en-produccion
+# CORS_ORIGINS=http://localhost:5173
 ```
 
-Al iniciar, el backend aplica migraciones automáticamente y persiste el estado en la tabla `app_estado` (además de crear el esquema relacional de `001_init.sql`).
+O levanta PostgreSQL + API Rust en contenedores con el perfil `full`:
 
-### Enlace frontend ↔ backend
+```bash
+docker compose --profile full up -d --build
+```
 
-El frontend lee `VITE_API_URL` (ver `.env` / `.env.example`). Con el backend en marcha:
+Al iniciar, el backend aplica automáticamente `001_init.sql`, `002_estado_kv.sql`, `003_relational_ledger.sql` y `004_auth_rls_and_crud.sql`, y carga la semilla relacional si `copropiedades` está vacía.
 
-- `GET /api/v1/bootstrap` carga datos maestros y estado.
-- `PUT /api/v1/state` sincroniza cada cambio (asentar, aprobar/rechazar, editar pre-asientos, cierre, etc.).
-- `POST /api/v1/reset` restablece la demo.
+## Autenticación y roles (RBAC)
 
-> Si `VITE_API_URL` está vacío, el frontend funciona en modo local con `localStorage`.
+El botón de usuario en la barra superior abre el selector de sesión (`AuthModal`), permitiendo iniciar sesión contra `/api/v1/auth/login` o cambiar de perfil en modo local:
 
-## Cómo funciona (prototipo actual)
+| Rol | Permisos | Usuario demo (`clave: vertika2026`) |
+| --- | --- | --- |
+| `CONTADOR` | Todo contabilidad (`aprobar`, `rechazar`, `comprobantes manuales`, `anular`, `cierre`, `causación`, `abrir periodo`, `crear cuentas PUC`) + maestros + lectura | `contador@vertika.co` (Lina Castro) |
+| `ADMINISTRADOR` | Gestión de `maestros` (unidades, terceros, presupuesto, parámetros de copropiedad) + `causación masiva` + lectura | `admin@vertika.co` (Carlos Mendoza) |
+| `REVISOR_FISCAL` | Solo lectura, auditoría, reportes y exportaciones | `revisor@vertika.co` (Marta Lucía Peña) |
+| `CONSEJO` | Solo lectura, auditoría, reportes y exportaciones | `consejo@vertika.co` (Andrea Gómez) |
 
-### Flujo operativo
-1. **Bandeja de pre-asientos**: llegan documentos/propuestas (simulados en demo) con asiento sugerido y confianza.
-2. **Revisión**: el contador edita cuentas, terceros, rubros y montos.
-3. **F6 · Acarreo IA**: aplica retenciones deterministas según el tercero (ReteFuente/ReteICA/ReteIVA) y recompone la contrapartida.
-4. **F10 · Asentar**: se valida la partida doble y el PUC; si es válido se crea el comprobante (consecutivo, hash, auditoría).
-5. **Impacto inmediato**: libro auxiliar, balance, presupuesto, cartera y comprobantes se actualizan.
-6. **Cierre**: genera comprobante automático (depreciación, provisión de cartera, traslado a fondo de imprevistos) y bloquea el periodo.
+> Para exigir `Authorization: Bearer <token>` en todas las rutas `/api/v1/*` en entorno servidor, define `AUTH_REQUIRED=true` y un `AUTH_SECRET` robusto.
 
-Los **periodos cerrados** quedan en solo lectura.
+## Flujo operativo y vistas
 
-### Vistas
-- **Bandeja de pre-asientos**: documento + asiento propuesto editable, validación en vivo.
-- **Libro auxiliar**: detalle/resumen por cuenta, saldo corrido, exportación CSV.
-- **Balance de prueba**: saldos/movimientos por tipo de cuenta y cuadre.
-- **Ejecución presupuestal**: presupuesto anual vs ejecutado por rubro y alertas.
-- **Cartera y paz y salvo**: antigüedad, mora y estado por unidad.
-- **Comprobantes**: listado, filtros y detalle (origen, hash).
-- **Maestros**: PUC ESAL, unidades (coeficientes) y terceros (retenciones).
-- **Cierre mensual**: previsualización y ejecución del cierre.
-- **Ajustes y auditoría**: configuración, trazabilidad, exportar/restablecer demo.
+### Flujo contable
+1. **Bandeja de pre-asientos**: revisa propuestas pendientes, edita líneas contables, ejecuta `F6 · Acarreo IA` (retenciones deterministas por tercero) y `F10 · Asentar`.
+2. **Comprobantes manuales y anulaciones**: creación con validación en vivo de partida doble (`CC`, `RC`, `CE`, `NC`, `DS`) y anulación controlada vía nota contable `NC` de reverso (sin borrar historia).
+3. **Cartera y causación masiva**: liquidación mensual distribuida por coeficiente (con fondo de imprevistos e intereses de mora opcionales), análisis de antigüedad y descarga de **Paz y Salvo Ley 675** (HTML) para unidades al día.
+4. **Cierre y apertura de periodo**: asiento automático de cierre (depreciación, provisión de cartera, traslado al fondo de imprevistos), bloqueo inmutable del periodo en SQL, descarga de paquete de asamblea (EEFF ESAL, certificados de retención, XML DIAN Formato 1001, ejecución presupuestal CSV) y apertura del periodo siguiente.
+5. **Maestros, Presupuesto y Ajustes**: creación de cuentas PUC ESAL, alta/edición de unidades inmobiliarias y terceros, ajuste de presupuesto anual por rubro y configuración financiera del conjunto.
 
 ### Atajos de teclado
 
@@ -113,67 +112,36 @@ Los **periodos cerrados** quedan en solo lectura.
 | `F10` | Asentar pre-asiento seleccionado |
 | `F11` | Alternar modo de vista en tablas |
 
-## Datos de demostración
+## Arquitectura y estructura
 
-- **Altavista**: 24 unidades (NIIF Grupo 2).
-- **Colina Campestre**: 12 unidades.
-- **Plaza Norte**: 18 locales.
-
-Periodos: **sep/oct 2026 cerrados**, **nov 2026 abierto** con pre-asientos pendientes.  
-La información se guarda en `localStorage` y, si está configurado `VITE_API_URL`, se sincroniza con el backend/BD. Desde **Ajustes** se puede exportar el estado o restablecer la demo.
-
-## Arquitectura
-
-- **Frontend:** SPA React. Usa `src/domain/` para reglas y experiencia inmediata; con `VITE_API_URL` sincroniza estado con el backend.
-- **Backend (Rust/Axum):** API para bootstrap/estado/reset y endpoints deterministas (`validate`, `preview`, `carry-forward`, `balance`). Con `DATABASE_URL` aplica migraciones y persiste en PostgreSQL.
-- **Base de datos:** `backend/migrations/001_init.sql` define el esquema relacional del ledger; `002_estado_kv.sql` soporta la persistencia MVP del estado enlazado al frontend.
-
-```
+```text
 .
 ├─ src/
-│  ├─ domain/           # motor contable puro (tipos, PUC, seed, engine, formato)
-│  ├─ api.ts             # cliente HTTP hacia el backend
-│  ├─ store.ts          # estado + acciones + sincronización local/remota
-│  ├─ components/       # shell, overlays, documento, detalle
-│  ├─ views/            # bandeja, libro, balance, presupuesto, cartera, etc.
+│  ├─ domain/              # motor contable puro, PUC, seed, formato y reportes ESAL/DIAN (reports.ts)
+│  ├─ api.ts               # cliente HTTP + token Bearer hacia el backend Rust
+│  ├─ store.ts             # estado React (useSyncExternalStore), RBAC cliente y caché localStorage
+│  ├─ components/          # shell, overlays, documento, detalle, AuthModal, NuevoComprobanteModal
+│  ├─ views/               # bandeja, libro, balance, presupuesto, cartera, comprobantes, maestros, cierre, ajustes
 │  └─ App.tsx
 ├─ backend/
-│  ├─ src/              # Axum API, db, dominio/ledger en Rust
-│  ├─ migrations/       # 001 esquema relacional, 002 estado MVP
+│  ├─ src/
+│  │  ├─ domain/           # modelos HTTP + motor ledger Decimal/SHA-256 en Rust
+│  │  ├─ repo/             # MemoryRepo y PostgresRepo con aislamiento por tenant
+│  │  ├─ auth.rs           # JWT HS256, HMAC-SHA256 passwords y RBAC
+│  │  ├─ error.rs          # mapeo HTTP (401/403/404/409/422)
+│  │  └─ main.rs           # router Axum y suite de pruebas integradas
+│  ├─ migrations/          # 001 esquema, 002 app_estado, 003 triggers ACID, 004 usuarios/RBAC/RLS
+│  ├─ Dockerfile           # build multi-etapa para despliegue
 │  └─ seed_bootstrap.json
-├─ docs/
-│  └─ ARQUITECTURA.md
-├─ docker-compose.yml   # PostgreSQL
-├─ .env.example         # VITE_API_URL
-└─ blueprint_fintech_ia_propiedad_horizontal.md
+├─ scripts/                # smoke.ts y render.tsx
+├─ docs/ARQUITECTURA.md
+├─ .github/workflows/ci.yml
+└─ docker-compose.yml      # db (postgres:16) y api (perfil full)
 ```
 
-## Determinismo contable
+## Roadmap siguiente
 
-- Las reglas críticas (partida doble, cuentas válidas, retenciones/acarreo, hash de comprobante) se ejecutan de forma **determinista**.
-- El frontend aplica estas reglas para respuesta inmediata; el backend expone las mismas capacidades (`/api/v1/ledger/validate`, `/api/v1/ledger/preview`, `/api/v1/pre-entries/carry-forward`) como fuente verificable para integraciones y, progresivamente, para posting en servidor.
-- La IA (o procesos de ingesta) solo proponen pre-asientos: nunca se deben contabilizar movimientos descuadrados.
-
-## Reglas del motor contable
-
-- Un comprobante solo se asienta si **débitos = créditos** y las cuentas existen en el PUC.
-- Los movimientos no pueden tener débito y crédito simultáneos ni montos inválidos.
-- Los **coeficientes** de copropiedad suman 100%.
-- Los **periodos cerrados** son inmutables para nuevas contabilizaciones.
-- Cada comprobante queda con **hash, origen y auditoría**.
-- El **cierre** aplica depreciación, provisión de cartera y traslado al fondo de imprevistos.
-
-## Documentación
-
-- [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md): arquitectura, decisión de backend en Rust, modelo de datos, contratos y roadmap.
-- [`backend/README.md`](backend/README.md): ejecución y API del servicio Rust.
-- [`backend/migrations/001_init.sql`](backend/migrations/001_init.sql): esquema inicial PostgreSQL.
-- [`blueprint_fintech_ia_propiedad_horizontal.md`](blueprint_fintech_ia_propiedad_horizontal.md): visión de producto y blueprint funcional original.
-
-## Roadmap resumido
-
-1. **Normalizar persistencia**: pasar de `app_estado` (JSON MVP) a tablas relacionales para pre-asientos, comprobantes, movimientos y auditoría con posting transaccional en servidor.
-2. **Autenticación y multi-tenant**: RBAC y Row-Level Security por `copropiedad_id`.
-3. **API de dominio completa**: maestros, flujo de aprobación/asentado, reportes y cierre calculados en backend.
-4. **Frontend 100% API-driven**: usar endpoints de acciones/reportes del backend como fuente de verdad (manteniendo `localStorage` solo como caché/offline).
-5. **Ingesta y agentes** (DIAN/soportes/recaudo) y módulos fintech (NFC/Bre-B/payouts).
+1. **Ingesta desde agentes (`POST /api/v1/pre-entries`)**: permitir que workers o un agente IA (p. ej. Eve) radiquen pre-asientos reales en la Bandeja sin permiso para asentar directamente.
+2. **Conectores DIAN y OCR**: lectura automática de XML UBL 2.1 DIAN y extracción OCR de facturas/recibos públicos.
+3. **Recaudo y tesorería fintech**: webhooks reales de NFC, Bre-B y pasarela (Wompi / PSE), más dispersión a proveedores.
+4. **Hardening productivo**: gestión/alta real de usuarios por copropiedad, rotación de secretos y despliegue gestionado (frontend + Rust API + PostgreSQL 16).

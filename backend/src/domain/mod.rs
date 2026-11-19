@@ -65,12 +65,14 @@ pub struct ValidationResult {
     pub errors: Vec<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub puc: Vec<LedgerAccount>,
     pub third_parties: Vec<ThirdParty>,
 }
 
+#[cfg(test)]
 impl AppState {
     pub fn demo() -> Self {
         Self {

@@ -16,5 +16,22 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    profiles: ["full"]
+    build: ./backend
+    container_name: vertika-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      RUST_LOG: vertika_backend=info,tower_http=info,sqlx=warn
+      DATABASE_URL: postgres://vertika:vertika@db:5432/vertika
+      AUTH_REQUIRED: "false"
+      AUTH_SECRET: vertika-dev-secret-change-in-prod
+      CORS_ORIGINS: http://localhost:5173
+    ports:
+      - "8080:8080"
+
 volumes:
   vertika_pgdata:
