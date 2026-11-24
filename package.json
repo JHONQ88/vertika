@@ -12,11 +12,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
+    "@ai-sdk/google": "^4.0.125",
     "@vercel/connect": "2.7.0",
     "ai": "^7.0.172",
     "eve": "^1.1.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "zod": "4.6.7"
   },
   "devDependencies": {
