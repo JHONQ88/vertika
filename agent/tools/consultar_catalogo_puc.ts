@@ -56,9 +56,18 @@ export default defineTool({
           (a.note ?? '').toLowerCase().includes(needle),
       );
 
+    const cap = 40;
     return {
       total: filtradas.length,
-      cuentas: filtradas,
+      mostradas: Math.min(filtradas.length, cap),
+      cuentas: filtradas.slice(0, cap).map((a) => ({
+        code: a.code,
+        name: a.name,
+        tipo: a.account_type,
+        nat: a.nature,
+        reqTercero: a.requires_third_party,
+        reqUnidad: a.requires_unit,
+      })),
     };
   },
 });

@@ -9,6 +9,8 @@ const modelId = process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b";
 
 export default defineAgent({
   model: groq(modelId),
+  defaultTools: false,
+  tool: false,
   modelContextWindowTokens: 131_072,
   compaction: {
     modelContextWindowTokens: 131_072,

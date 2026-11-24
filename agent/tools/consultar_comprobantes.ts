@@ -51,12 +51,24 @@ export default defineTool({
     );
 
     const filtrados = tipo ? entries.filter((e) => e.tipo === tipo) : entries;
-    const cap = limite ?? 20;
+    const cap = Math.min(limite ?? 12, 25);
 
     return {
       totalEncontrados: filtrados.length,
       mostrados: Math.min(filtrados.length, cap),
-      comprobantes: filtrados.slice(-cap),
+      comprobantes: filtrados.slice(-cap).map((e) => ({
+        id: e.id,
+        periodo: e.periodo,
+        tipo: e.tipo,
+        consecutivo: e.consecutivo,
+        fecha: e.fecha,
+        estado: e.estado,
+        origen: e.origen,
+        descripcion: e.descripcion,
+        totalDebito: e.totalDebito,
+        totalCredito: e.totalCredito,
+        ...(e.referencia ? { referencia: e.referencia } : {}),
+      })),
     };
   },
 });
