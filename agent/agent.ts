@@ -1,13 +1,14 @@
 import { defineAgent } from "eve";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 
-const google = createGoogleGenerativeAI({
-  apiKey:
-    process.env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
-    process.env.GEMINI_API_KEY?.trim(),
+const groq = createGroq({
+  apiKey: process.env.GROQ_API_KEY?.trim(),
 });
 
 export default defineAgent({
-  model: google("gemini-2.5-flash"),
-  reasoning: "medium",
+  model: groq("llama-3.3-70b-versatile"),
+  modelContextWindowTokens: 131_072,
+  compaction: {
+    modelContextWindowTokens: 131_072,
+  },
 });
