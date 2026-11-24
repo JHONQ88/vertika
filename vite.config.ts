@@ -6,6 +6,6 @@ import { defineConfig } from 'vite';
 export default defineConfig(({ command }) => ({
   plugins: [
     react(),
-    ...(command === 'serve' || Boolean(process.env.VERCEL) ? [eveVite()] : []),
+    ...(command === 'serve' ? [eveVite()] : []),
   ],
 }));

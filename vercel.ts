@@ -1,7 +1,7 @@
 import { withEve } from 'eve/vercel';
 
 export default await withEve({
-  experimentalServices: {
+  services: {
     web: {
       entrypoint: '.',
       framework: 'vite',
