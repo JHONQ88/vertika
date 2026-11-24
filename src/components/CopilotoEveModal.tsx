@@ -5,6 +5,7 @@ import type { Copropiedad } from '../domain/types';
 import { fmtPeriodo } from '../domain/format';
 import { getAuthToken } from '../api';
 import { acciones } from '../store';
+import { EveMarkdown } from './EveMarkdown';
 import { Badge, Btn, Modal } from './ui';
 
 function formatAgentError(err: unknown): string {
@@ -84,7 +85,7 @@ export function CopilotoEveModal({
       onClose={onClose}
       title="Copiloto Contable Eve IA"
       subtitle={`${empresa.nombreCorto} · ${fmtPeriodo(periodo)} · Conectado al motor determinista Rust`}
-      width={720}
+      width={780}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div
@@ -128,8 +129,8 @@ export function CopilotoEveModal({
 
         <div
           style={{
-            minHeight: 260,
-            maxHeight: 380,
+            minHeight: 280,
+            maxHeight: 440,
             overflowY: 'auto',
             border: '1px solid var(--line)',
             borderRadius: 10,
@@ -175,7 +176,7 @@ export function CopilotoEveModal({
                   key={msg.id}
                   style={{
                     alignSelf: isUser ? 'flex-end' : 'flex-start',
-                    maxWidth: '90%',
+                    maxWidth: isUser ? '86%' : '96%',
                     padding: '9px 12px',
                     borderRadius: 10,
                     background: isUser ? 'var(--accent, #0f766e)' : 'var(--surface, #ffffff)',
@@ -197,14 +198,17 @@ export function CopilotoEveModal({
                   </div>
                   {msg.parts.map((part, idx) => {
                     if (part.type === 'text') {
-                      return (
-                        <div
-                          key={part.id ?? idx}
-                          style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
-                        >
-                          {part.text}
-                        </div>
-                      );
+                      if (isUser) {
+                        return (
+                          <div
+                            key={part.id ?? idx}
+                            style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+                          >
+                            {part.text}
+                          </div>
+                        );
+                      }
+                      return <EveMarkdown key={part.id ?? idx} text={part.text} />;
                     }
                     if (part.type === 'tool') {
                       return (
@@ -281,8 +285,7 @@ export function CopilotoEveModal({
           >
             <strong>Error de Eve:</strong> {formatAgentError(agent.error)}
             <div style={{ marginTop: 4, opacity: 0.9 }}>
-              Si faltan credenciales del modelo en local, ejecuta <span className="mono">npm exec -- eve login</span>{' '}
-              o define <span className="mono">OPENAI_API_KEY</span> / <span className="mono">AI_GATEWAY_API_KEY</span>{' '}
+              Si faltan credenciales del modelo en local, define <span className="mono">GROQ_API_KEY</span>{' '}
               antes de iniciar <span className="mono">npm run dev</span>.
             </div>
           </div>
