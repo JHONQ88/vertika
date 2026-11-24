@@ -8,6 +8,7 @@ COPY migrations ./migrations
 COPY src ./src
 COPY seed_bootstrap.json ./
 
+ENV CARGO_BUILD_JOBS=2
 RUN cargo build --release --locked
 
 # Etapa de ejecución minimalista

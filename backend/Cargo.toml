@@ -31,6 +31,6 @@ default = []
 postgres = []  # reservado; la integración usa sqlx cuando DATABASE_URL está definido
 
 [profile.release]
-lto = true
-codegen-units = 1
+opt-level = 2
+lto = false
 strip = true
