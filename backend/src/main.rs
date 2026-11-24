@@ -19,8 +19,8 @@ use axum::{
 use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
-    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CreateCompanyRequest,
-    CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
+    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CopyThirdPartiesRequest,
+    CreateCompanyRequest, CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
     UpdateCompanySettingsRequest, UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest,
     UpsertThirdPartyRequest, UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
@@ -201,6 +201,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(create_third_party),
         )
         .route(
+            "/api/v1/companies/:company_id/third-parties/copy-from",
+            post(copy_third_parties),
+        )
+        .route(
             "/api/v1/companies/:company_id/third-parties/:tp_id",
             put(update_third_party),
         )
@@ -295,10 +299,13 @@ fn filter_estado_by_companies(val: &mut Value, allowed: &[String]) {
 }
 
 fn filter_bootstrap_by_companies(val: &mut Value, allowed: &[String]) {
+    let has_demo_company = allowed
+        .iter()
+        .any(|c| matches!(c.as_str(), "altavista" | "colina" | "plaza-norte"));
     if let Some(datos) = val.get_mut("datos").and_then(|v| v.as_object_mut()) {
         filter_array_by_company(datos, "companies", "id", allowed, false);
         filter_array_by_company(datos, "units", "empresaId", allowed, false);
-        filter_array_by_company(datos, "terceros", "empresaId", allowed, !allowed.is_empty());
+        filter_array_by_company(datos, "terceros", "empresaId", allowed, has_demo_company);
         filter_array_by_company(datos, "rubros", "empresaId", allowed, false);
         filter_array_by_company(datos, "comprobantes", "empresaId", allowed, false);
         filter_array_by_company(datos, "preAsientos", "empresaId", allowed, false);
@@ -864,6 +871,22 @@ async fn update_third_party(
         .update_third_party(&company_id, &tp_id, req, &ctx.actor_label())
         .await?;
     Ok(Json(serde_json::to_value(tp).unwrap_or_else(|_| json!({}))))
+}
+
+async fn copy_third_parties(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<CopyThirdPartiesRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    ctx.require_company_access(&req.source_company_id)?;
+    let res = state
+        .store
+        .copy_third_parties(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok(Json(serde_json::to_value(res).unwrap_or_else(|_| json!({}))))
 }
 
 async fn create_puc_account(

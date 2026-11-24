@@ -8,7 +8,8 @@ use crate::auth::{
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
     ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
-    ClosePeriodResult, CreateCompanyRequest, CreateCompanyResult, CreateEntryRequest,
+    ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest,
+    CreateCompanyResult, CreateEntryRequest,
     CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
     FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
     FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
@@ -312,6 +313,18 @@ impl Store {
         match self {
             Store::Memory(r) => r.update_third_party(company_id, tp_id, req, actor).await,
             Store::Postgres(r) => r.update_third_party(company_id, tp_id, req, actor).await,
+        }
+    }
+
+    pub async fn copy_third_parties(
+        &self,
+        target_company_id: &str,
+        req: CopyThirdPartiesRequest,
+        actor: &str,
+    ) -> Result<CopyThirdPartiesResult, ApiError> {
+        match self {
+            Store::Memory(r) => r.copy_third_parties(target_company_id, req, actor).await,
+            Store::Postgres(r) => r.copy_third_parties(target_company_id, req, actor).await,
         }
     }
 

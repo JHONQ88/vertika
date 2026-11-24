@@ -507,3 +507,20 @@ pub struct CreateCompanyResult {
     pub user: crate::auth::AuthUser,
     pub token: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyThirdPartiesRequest {
+    #[serde(alias = "source_company_id")]
+    pub source_company_id: String,
+    #[serde(default, alias = "third_party_ids")]
+    pub third_party_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyThirdPartiesResult {
+    pub copiados: usize,
+    pub omitidos: usize,
+    pub terceros: Vec<FrontendTercero>,
+}

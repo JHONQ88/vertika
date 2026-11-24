@@ -5,7 +5,8 @@ use crate::auth::{
 };
 use crate::domain::{
     demo_puc, ledger, third_parties_from_seed, ApproveResult, BalanceRequest, BillPeriodRequest,
-    BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateCompanyRequest,
+    BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult,
+    CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest,
     CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
     CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
     FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
@@ -1627,6 +1628,102 @@ impl MemoryRepo {
         g.estado.auditoria.insert(0, ev);
         g.estado.auditoria.truncate(200);
         Ok(updated)
+    }
+
+    pub async fn copy_third_parties(
+        &self,
+        target_company_id: &str,
+        req: CopyThirdPartiesRequest,
+        actor: &str,
+    ) -> Result<CopyThirdPartiesResult, ApiError> {
+        let source_id = req.source_company_id.trim();
+        if source_id.is_empty() || source_id == target_company_id {
+            return Err(ApiError::unprocessable(
+                "Selecciona una copropiedad origen distinta a la actual.",
+            ));
+        }
+        let mut g = self.inner.write().await;
+        Self::find_company(&g.datos, target_company_id)?;
+        Self::find_company(&g.datos, source_id)?;
+
+        let filter_ids: Option<std::collections::HashSet<String>> = req.third_party_ids.map(|v| {
+            v.into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        });
+        let existing_docs: std::collections::HashSet<String> = g
+            .datos
+            .terceros
+            .iter()
+            .filter(|t| t.empresa_id.as_deref() == Some(target_company_id))
+            .map(|t| t.documento.trim().to_lowercase())
+            .collect();
+
+        let source_list: Vec<FrontendTercero> = g
+            .datos
+            .terceros
+            .iter()
+            .filter(|t| t.empresa_id.as_deref() == Some(source_id))
+            .filter(|t| {
+                filter_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&t.id))
+            })
+            .cloned()
+            .collect();
+
+        let mut copiados_vec = Vec::new();
+        let mut omitidos = 0usize;
+        let mut seen_docs = existing_docs;
+
+        for src in source_list {
+            let doc_key = src.documento.trim().to_lowercase();
+            if seen_docs.contains(&doc_key) {
+                omitidos += 1;
+                continue;
+            }
+            seen_docs.insert(doc_key);
+            let new_id = format!("ter-{}", Uuid::new_v4().simple());
+            let mut cloned = src;
+            cloned.id = new_id.clone();
+            cloned.empresa_id = Some(target_company_id.into());
+            g.datos.terceros.push(cloned.clone());
+            g.third_parties.push(ThirdParty {
+                id: new_id,
+                name: cloned.nombre.clone(),
+                nit: match &cloned.dv {
+                    Some(d) if !d.is_empty() => format!("{}-{d}", cloned.documento),
+                    _ => cloned.documento.clone(),
+                },
+                retefuente_pct: cloned.retefuente_pct,
+                reteica_pct: cloned.reteica_pct,
+                reteiva_pct: cloned.reteiva_pct,
+            });
+            copiados_vec.push(cloned);
+        }
+
+        if !copiados_vec.is_empty() {
+            let ev = Self::make_audit(
+                target_company_id,
+                actor,
+                "Copió terceros",
+                format!(
+                    "Copió {} tercero(s) desde {} ({} omitido(s) por documento existente)",
+                    copiados_vec.len(),
+                    source_id,
+                    omitidos
+                ),
+            );
+            g.estado.auditoria.insert(0, ev);
+            g.estado.auditoria.truncate(200);
+        }
+
+        Ok(CopyThirdPartiesResult {
+            copiados: copiados_vec.len(),
+            omitidos,
+            terceros: copiados_vec,
+        })
     }
 
     pub async fn create_puc_account(

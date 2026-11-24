@@ -24,6 +24,7 @@ import {
   billPeriodApi,
   changePasswordApi,
   closePeriodApi,
+  copyThirdPartiesApi,
   createCompanyApi,
   createEntryApi,
   createPreEntryApi,
@@ -394,8 +395,13 @@ export function rubrosDe(estado: EstadoApp) {
   return DATOS.rubros.filter((r) => r.empresaId === estado.activeCompanyId);
 }
 
+const DEMO_COMPANY_IDS = new Set(['altavista', 'colina', 'plaza-norte']);
+
 export function tercerosDe(estado: EstadoApp) {
-  return DATOS.terceros.filter((t) => !t.empresaId || t.empresaId === estado.activeCompanyId);
+  const allowGlobalDemo = DEMO_COMPANY_IDS.has(estado.activeCompanyId);
+  return DATOS.terceros.filter(
+    (t) => t.empresaId === estado.activeCompanyId || (allowGlobalDemo && !t.empresaId),
+  );
 }
 
 export function esPeriodoBloqueado(estado: EstadoApp, periodo: string): boolean {
@@ -607,6 +613,62 @@ export const acciones = {
       setSyncStatus({ syncing: false, lastError: msg });
       return { ok: false, error: msg };
     }
+  },
+
+  async copiarTercerosDeOtraEmpresa(
+    targetCompanyId: string,
+    sourceCompanyId: string,
+  ): Promise<Resultado> {
+    if (!tienePermiso(authSession.user.rol, 'maestros')) {
+      return { ok: false, error: `El rol ${authSession.user.rol} no puede copiar terceros.` };
+    }
+    if (!sourceCompanyId || sourceCompanyId === targetCompanyId) {
+      return { ok: false, error: 'Selecciona una copropiedad origen distinta a la actual.' };
+    }
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await copyThirdPartiesApi(targetCompanyId, sourceCompanyId);
+        await acciones.sincronizar();
+        setSyncStatus({ syncing: false, lastError: null });
+        return {
+          ok: true,
+          detalle: `${res.copiados} copiado(s)${res.omitidos > 0 ? ` · ${res.omitidos} ya existía(n)` : ''}`,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudieron copiar los terceros.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+    const existingDocs = new Set(
+      DATOS.terceros
+        .filter((t) => t.empresaId === targetCompanyId)
+        .map((t) => t.documento.trim().toLowerCase()),
+    );
+    const fuente = DATOS.terceros.filter((t) => t.empresaId === sourceCompanyId);
+    let copiados = 0;
+    let omitidos = 0;
+    for (const src of fuente) {
+      const key = src.documento.trim().toLowerCase();
+      if (existingDocs.has(key)) {
+        omitidos += 1;
+        continue;
+      }
+      existingDocs.add(key);
+      DATOS.terceros.push({
+        ...src,
+        id: `ter-${Date.now().toString(36)}-${copiados}`,
+        empresaId: targetCompanyId,
+      });
+      copiados += 1;
+    }
+    saveDatosLocal();
+    commitLocal({ ...state });
+    return {
+      ok: true,
+      detalle: `${copiados} copiado(s)${omitidos > 0 ? ` · ${omitidos} ya existía(n)` : ''}`,
+    };
   },
 
   cambiarEmpresa(id: string) {

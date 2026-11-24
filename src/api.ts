@@ -493,6 +493,26 @@ export async function createThirdPartyApi(
   });
 }
 
+export interface CopyThirdPartiesResult {
+  copiados: number;
+  omitidos: number;
+  terceros: Tercero[];
+}
+
+export async function copyThirdPartiesApi(
+  targetCompanyId: string,
+  sourceCompanyId: string,
+  thirdPartyIds?: string[],
+): Promise<CopyThirdPartiesResult> {
+  return request<CopyThirdPartiesResult>(
+    `/api/v1/companies/${encodeURIComponent(targetCompanyId)}/third-parties/copy-from`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ sourceCompanyId, thirdPartyIds }),
+    },
+  );
+}
+
 export async function updateThirdPartyApi(
   companyId: string,
   tpId: string,

@@ -6,7 +6,8 @@ use crate::auth::{
 use crate::db::Db;
 use crate::domain::{
     demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
-    ClosePeriodRequest, ClosePeriodResult, CreateCompanyRequest, CreateCompanyResult,
+    ClosePeriodRequest, ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult,
+    CreateCompanyRequest, CreateCompanyResult,
     CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest,
     FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea,
     FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount,
@@ -3500,6 +3501,150 @@ impl PostgresRepo {
             reteiva_pct: req.reteiva_pct,
             no_obligado: req.no_obligado,
             regimen_especial: req.regimen_especial,
+        })
+    }
+
+    pub async fn copy_third_parties(
+        &self,
+        target_company_id: &str,
+        req: CopyThirdPartiesRequest,
+        actor: &str,
+    ) -> Result<CopyThirdPartiesResult, ApiError> {
+        let source_id = req.source_company_id.trim();
+        if source_id.is_empty() || source_id == target_company_id {
+            return Err(ApiError::unprocessable(
+                "Selecciona una copropiedad origen distinta a la actual.",
+            ));
+        }
+
+        let mut tx = self.db.pool.begin().await?;
+        let target_company = Self::resolve_company_tx(&mut tx, target_company_id).await?;
+        let source_company = Self::resolve_company_tx(&mut tx, source_id).await?;
+
+        let existing_docs_vec: Vec<String> = sqlx::query_scalar(
+            "SELECT LOWER(TRIM(documento)) FROM terceros WHERE copropiedad_id = $1",
+        )
+        .bind(target_company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut seen_docs: std::collections::HashSet<String> =
+            existing_docs_vec.into_iter().collect();
+
+        let source_rows = sqlx::query(
+            "SELECT COALESCE(clave_externa, id::text) AS ext_id,
+                    nombre, tipo, documento, dv, email, telefono, ciudad,
+                    retefuente_pct, reteica_pct, reteiva_pct, no_obligado, regimen_especial
+               FROM terceros
+              WHERE copropiedad_id = $1
+              ORDER BY nombre",
+        )
+        .bind(source_company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let filter_ids: Option<std::collections::HashSet<String>> = req.third_party_ids.map(|v| {
+            v.into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        });
+
+        let mut copiados_vec = Vec::new();
+        let mut omitidos = 0usize;
+
+        for row in source_rows {
+            let ext_id: String = row.try_get("ext_id")?;
+            if let Some(ids) = &filter_ids {
+                if !ids.contains(&ext_id) {
+                    continue;
+                }
+            }
+            let documento: String = row.try_get("documento")?;
+            let doc_key = documento.trim().to_lowercase();
+            if seen_docs.contains(&doc_key) {
+                omitidos += 1;
+                continue;
+            }
+            seen_docs.insert(doc_key);
+
+            let new_uuid = Uuid::new_v4();
+            let new_ext = format!("ter-{}", new_uuid.simple());
+            let nombre: String = row.try_get("nombre")?;
+            let tipo: String = row.try_get("tipo")?;
+            let dv: Option<String> = row.try_get("dv")?;
+            let email: String = row.try_get::<Option<String>, _>("email")?.unwrap_or_default();
+            let telefono: String = row.try_get::<Option<String>, _>("telefono")?.unwrap_or_default();
+            let ciudad: String = row.try_get::<Option<String>, _>("ciudad")?.unwrap_or_default();
+            let retefuente_pct: Decimal = row.try_get("retefuente_pct")?;
+            let reteica_pct: Decimal = row.try_get("reteica_pct")?;
+            let reteiva_pct: Decimal = row.try_get("reteiva_pct")?;
+            let no_obligado: bool = row.try_get("no_obligado")?;
+            let regimen_especial: bool = row.try_get("regimen_especial")?;
+
+            sqlx::query(
+                "INSERT INTO terceros (
+                    id, clave_externa, copropiedad_id, nombre, tipo, documento, dv,
+                    email, telefono, ciudad, retefuente_pct, reteica_pct, reteiva_pct,
+                    regimen_especial, no_obligado
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+            )
+            .bind(new_uuid)
+            .bind(&new_ext)
+            .bind(target_company.uuid)
+            .bind(&nombre)
+            .bind(&tipo)
+            .bind(&documento)
+            .bind(&dv)
+            .bind(&email)
+            .bind(&telefono)
+            .bind(&ciudad)
+            .bind(retefuente_pct)
+            .bind(reteica_pct)
+            .bind(reteiva_pct)
+            .bind(regimen_especial)
+            .bind(no_obligado)
+            .execute(&mut *tx)
+            .await?;
+
+            copiados_vec.push(FrontendTercero {
+                id: new_ext,
+                empresa_id: Some(target_company.slug.clone()),
+                nombre,
+                tipo,
+                documento,
+                dv,
+                email,
+                telefono,
+                ciudad,
+                retefuente_pct,
+                reteica_pct,
+                reteiva_pct,
+                no_obligado,
+                regimen_especial: Some(regimen_especial),
+            });
+        }
+
+        if !copiados_vec.is_empty() {
+            Self::insert_audit_tx(
+                &mut tx,
+                &target_company,
+                actor,
+                "Copió terceros",
+                &format!(
+                    "Copió {} tercero(s) desde {} ({} omitido(s))",
+                    copiados_vec.len(),
+                    source_company.slug,
+                    omitidos
+                ),
+            )
+            .await?;
+        }
+        tx.commit().await?;
+
+        Ok(CopyThirdPartiesResult {
+            copiados: copiados_vec.len(),
+            omitidos,
+            terceros: copiados_vec,
         })
     }
 

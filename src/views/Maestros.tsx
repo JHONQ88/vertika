@@ -69,6 +69,10 @@ export function Maestros(props: VistaProps) {
   });
 
   const [modalTercero, setModalTercero] = useState(false);
+  const [modalCopiarTerceros, setModalCopiarTerceros] = useState(false);
+  const [origenCopiaId, setOrigenCopiaId] = useState('');
+  const [copiandoTerceros, setCopiandoTerceros] = useState(false);
+  const otrasCopropiedades = DATOS.companies.filter((c) => c.id !== empresa.id);
   const [editandoTerceroId, setEditandoTerceroId] = useState<string | null>(null);
   const [terceroForm, setTerceroForm] = useState<{
     nombre: string;
@@ -336,9 +340,24 @@ export function Maestros(props: VistaProps) {
               </Btn>
             )}
             {tab === 'terceros' && puedeEditarMaestros && (
-              <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevoTercero}>
-                Nuevo tercero
-              </Btn>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {otrasCopropiedades.length > 0 && (
+                  <Btn
+                    variant="outline"
+                    size="sm"
+                    icon="layers"
+                    onClick={() => {
+                      setOrigenCopiaId(otrasCopropiedades[0]?.id ?? '');
+                      setModalCopiarTerceros(true);
+                    }}
+                  >
+                    Copiar de otro conjunto
+                  </Btn>
+                )}
+                <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevoTercero}>
+                  Nuevo tercero
+                </Btn>
+              </div>
             )}
           </>
         }
@@ -948,6 +967,61 @@ export function Maestros(props: VistaProps) {
             </Btn>
             <Btn variant="primary" type="submit" icon="check" disabled={guardando}>
               {guardando ? 'Guardando…' : editandoTerceroId ? 'Guardar cambios' : 'Crear tercero'}
+            </Btn>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={modalCopiarTerceros}
+        onClose={() => setModalCopiarTerceros(false)}
+        title="Copiar terceros de otra copropiedad"
+        subtitle={`Importa proveedores y terceros hacia ${empresa.nombreCorto} sin duplicar documentos`}
+        width={480}
+      >
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!origenCopiaId) return;
+            setCopiandoTerceros(true);
+            try {
+              const res = await acciones.copiarTercerosDeOtraEmpresa(empresa.id, origenCopiaId);
+              if (res.ok) {
+                toast({ tone: 'ok', title: 'Terceros copiados', msg: res.detalle });
+                setModalCopiarTerceros(false);
+              } else {
+                toast({ tone: 'error', title: 'No se pudieron copiar', msg: res.error });
+              }
+            } finally {
+              setCopiandoTerceros(false);
+            }
+          }}
+          style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
+        >
+          <label className="field">
+            <span>Copropiedad origen (solo tus conjuntos)</span>
+            <select
+              required
+              value={origenCopiaId}
+              onChange={(e) => setOrigenCopiaId(e.target.value)}
+            >
+              {otrasCopropiedades.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nombreCorto} ({c.nit})
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="card-note" style={{ margin: 0 }}>
+            Los terceros cuyo NIT o cédula ya exista en <strong>{empresa.nombreCorto}</strong> se
+            omitirán automáticamente.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+            <Btn variant="ghost" type="button" onClick={() => setModalCopiarTerceros(false)}>
+              Cancelar
+            </Btn>
+            <Btn variant="primary" type="submit" disabled={copiandoTerceros || !origenCopiaId}>
+              {copiandoTerceros ? 'Copiando…' : 'Copiar terceros'}
             </Btn>
           </div>
         </form>
