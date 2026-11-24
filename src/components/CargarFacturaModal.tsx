@@ -389,7 +389,7 @@ export function CargarFacturaModal({
             <input
               type="number"
               min={0}
-              step={100}
+              step="any"
               required
               value={subtotal || ''}
               placeholder="2800000"
@@ -402,7 +402,7 @@ export function CargarFacturaModal({
             <input
               type="number"
               min={0}
-              step={100}
+              step="any"
               value={iva || ''}
               placeholder="532000"
               onChange={(e) => setIva(Number(e.target.value) || 0)}
