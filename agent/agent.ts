@@ -5,7 +5,7 @@ const groq = createGroq({
   apiKey: process.env.GROQ_API_KEY?.trim(),
 });
 
-const modelId = process.env.GROQ_MODEL?.trim() || "llama-3.1-8b-instant";
+const modelId = process.env.GROQ_MODEL?.trim() || "openai/gpt-oss-120b";
 
 export default defineAgent({
   model: groq(modelId),
