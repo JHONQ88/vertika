@@ -3,12 +3,12 @@ FROM rust:1-bookworm AS builder
 
 WORKDIR /app
 
-COPY Cargo.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 COPY src ./src
 COPY seed_bootstrap.json ./
 
-RUN cargo build --release
+RUN cargo build --release --locked
 
 # Etapa de ejecución minimalista
 FROM debian:bookworm-slim

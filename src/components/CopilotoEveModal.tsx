@@ -8,11 +8,16 @@ import { acciones } from '../store';
 import { Badge, Btn, Modal } from './ui';
 
 function formatAgentError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === 'object' && 'message' in err) {
-    return String((err as { message: unknown }).message);
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err && typeof err === 'object' && 'message' in err
+        ? String((err as { message: unknown }).message)
+        : String(err);
+  if (/429|rate\s*limit|quota|resource_exhausted/i.test(raw)) {
+    return 'Límite temporal de cuota de IA alcanzado (429). Intenta de nuevo en 1 minuto; el motor contable determinista (Bandeja, F6, F10, Cartera y Cierre) sigue funcionando con normalidad.';
   }
-  return String(err);
+  return raw;
 }
 
 const TOOL_TONE = (state: string): 'ok' | 'error' | 'warn' | 'info' => {

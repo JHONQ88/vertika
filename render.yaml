@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: vertika-api
+    runtime: docker
+    plan: free
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: RUST_LOG
+        value: "vertika_backend=info,tower_http=info,sqlx=warn"
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: AUTH_REQUIRED
+        value: "false"
+      - key: SEED_DEMO
+        value: "true"
+      - key: CORS_ORIGINS
+        sync: false
