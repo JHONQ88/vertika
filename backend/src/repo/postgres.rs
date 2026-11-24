@@ -2714,6 +2714,17 @@ impl PostgresRepo {
             }
         }
 
+        let nit_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copropiedades WHERE nit = $1)")
+                .bind(&nit)
+                .fetch_one(&mut *tx)
+                .await?;
+        if nit_exists {
+            return Err(ApiError::Conflict(
+                "Ya existe una copropiedad registrada con ese NIT.".into(),
+            ));
+        }
+
         let base_slug = slugify_company_name(&nombre_corto);
         let mut slug = base_slug.clone();
         let mut suffix = 2usize;
@@ -2845,19 +2856,19 @@ impl PostgresRepo {
             .await?;
         }
 
-        let aud_id = format!("aud-{}", Uuid::new_v4().simple());
+        let aud_uuid = Uuid::new_v4();
+        let aud_id = aud_uuid.to_string();
         let aud_detalle = format!("Creó la copropiedad {razon_social} (NIT {nit})");
         let now = Utc::now();
         sqlx::query(
-            "INSERT INTO auditoria_eventos (id, clave_externa, copropiedad_id, ts, actor, accion, detalle)
-             VALUES ($1, $2, $3, $4, $5, 'CREAR_COPROPIEDAD', $6)",
+            "INSERT INTO auditoria_eventos (id, copropiedad_id, actor, accion, detalle, metadata, created_at)
+             VALUES ($1, $2, $3, 'CREAR_COPROPIEDAD', $4, '{}'::jsonb, $5)",
         )
-        .bind(Uuid::new_v4())
-        .bind(&aud_id)
+        .bind(aud_uuid)
         .bind(cid)
-        .bind(now)
         .bind(actor)
         .bind(&aud_detalle)
+        .bind(now)
         .execute(&mut *tx)
         .await?;
 
