@@ -271,17 +271,16 @@ function round100_(n) {
 
 function unwrapAttachedInvoice_(rawXml) {
   if (!/AttachedDocument/i.test(rawXml)) return rawXml;
-  var attachmentBlock = extractBlock_(rawXml, 'Attachment');
-  if (attachmentBlock) {
-    var desc = extractFirstTag_(attachmentBlock, 'Description');
-    if (desc && /<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b/i.test(desc)) {
-      return desc;
+  var cdataRe = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  var m = cdataRe.exec(rawXml);
+  while (m) {
+    var inner = m[1].trim();
+    if (/<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b/i.test(inner)) {
+      return inner;
     }
+    m = cdataRe.exec(rawXml);
   }
-  var cdataMatch = rawXml.match(
-    /<!\[CDATA\[([\s\S]*?<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b[\s\S]*?)\]\]>/i
-  );
-  return cdataMatch ? cdataMatch[1] : rawXml;
+  return rawXml;
 }
 
 function parsearFacturaXml_(rawXml) {

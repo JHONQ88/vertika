@@ -8,6 +8,7 @@ export interface FacturaXmlParseada {
   cufe?: string;
   subtotal: number;
   iva: number;
+  otrosImpuestos: number;
   total: number;
   descripcion: string;
   items: DocItem[];
@@ -94,20 +95,26 @@ const round100 = (n: number) => Math.round(n / 100) * 100;
 
 /**
  * Unwraps a DIAN AttachedDocument XML to its inner UBL 2.1 <Invoice> or <CreditNote> if present.
+ * Matches the full <![CDATA[...]]> block directly so inner <cbc:Description> tags inside <InvoiceLine>
+ * never truncate the document.
  */
 function unwrapAttachedInvoice(rawXml: string): string {
   if (!/AttachedDocument/i.test(rawXml)) return rawXml;
-  const attachmentBlock = extractBlock(rawXml, 'Attachment');
-  if (attachmentBlock) {
-    const desc = extractFirstTag(attachmentBlock, 'Description');
-    if (desc && /<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b/i.test(desc)) {
-      return desc;
+  const cdataRe = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  let m: RegExpExecArray | null = cdataRe.exec(rawXml);
+  while (m) {
+    const inner = m[1].trim();
+    if (/<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b/i.test(inner)) {
+      return inner;
     }
+    m = cdataRe.exec(rawXml);
   }
-  const cdataMatch = rawXml.match(
-    /<!\[CDATA\[([\s\S]*?<(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b[\s\S]*?)\]\]>/i,
+  const encodedMatch = rawXml.match(
+    /(&lt;(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)\b[\s\S]*?&lt;\/(?:[a-zA-Z0-9_-]+:)?(?:Invoice|CreditNote)&gt;)/i,
   );
-  if (cdataMatch) return cdataMatch[1];
+  if (encodedMatch) {
+    return decodeXmlEntities(encodedMatch[1]).trim();
+  }
   return rawXml;
 }
 
@@ -155,9 +162,10 @@ export function parsearFacturaXmlUbl(xmlText: string): FacturaXmlParseada {
   const subtotal = parseAmount(extractFirstTag(monetaryBlock, 'LineExtensionAmount'));
   const payable = parseAmount(extractFirstTag(monetaryBlock, 'PayableAmount'));
 
-  // Extract document-level IVA (TaxScheme ID = '01' in DIAN UBL 2.1, or sole TaxTotal if scheme omitted)
+  // Extract document-level taxes: IVA (TaxScheme ID = '01') and other indirect taxes (ICUI '35', INC '04', IBUA '34', etc.)
   const taxBlocks = extractAllBlocks(withoutLines, 'TaxTotal');
   let iva = 0;
+  let otrosImpuestos = 0;
   let fallbackTax = 0;
   for (const tb of taxBlocks) {
     const amt = parseAmount(extractFirstTag(tb, 'TaxAmount'));
@@ -167,18 +175,25 @@ export function parsearFacturaXmlUbl(xmlText: string): FacturaXmlParseada {
     const schemeName = (extractFirstTag(schemeBlock, 'Name') ?? '').toUpperCase();
     if (schemeId === '01' || schemeName === 'IVA') {
       iva += amt;
-    } else if (!schemeId && !schemeName && fallbackTax === 0) {
+    } else if (schemeId || schemeName) {
+      otrosImpuestos += amt;
+    } else if (fallbackTax === 0) {
       fallbackTax = amt;
     }
   }
-  if (iva === 0 && fallbackTax > 0) {
+  if (iva === 0 && otrosImpuestos === 0 && fallbackTax > 0) {
     iva = fallbackTax;
   }
 
-  const total = payable > 0 ? payable : subtotal + iva;
-  const finalSubtotal = subtotal > 0 ? subtotal : Math.max(0, total - iva);
+  const total = payable > 0 ? payable : subtotal + iva + otrosImpuestos;
+  const finalSubtotal = subtotal > 0 ? subtotal : Math.max(0, total - iva - otrosImpuestos);
   if (finalSubtotal <= 0 && total <= 0) {
     throw new Error('No se encontraron montos válidos (LineExtensionAmount / PayableAmount) en el XML.');
+  }
+  // If PayableAmount includes additional taxes/charges not captured above, reconcile into otrosImpuestos so Total == PayableAmount
+  const diffExtra = total - finalSubtotal - iva - otrosImpuestos;
+  if (diffExtra > 0) {
+    otrosImpuestos += diffExtra;
   }
 
   const lineBlocks = [
@@ -191,10 +206,12 @@ export function parsearFacturaXmlUbl(xmlText: string): FacturaXmlParseada {
       const qtyRaw =
         extractFirstTag(lb, 'InvoicedQuantity') || extractFirstTag(lb, 'CreditedQuantity');
       const cantidad = Math.max(1, Number(qtyRaw?.replace(/[^0-9.]/g, '') || 1));
+      const lineExt = parseAmount(extractFirstTag(lb, 'LineExtensionAmount'));
       const priceBlock = extractBlock(lb, 'Price') ?? lb;
       const unitVal =
-        parseAmount(extractFirstTag(priceBlock, 'PriceAmount')) ||
-        Math.round(parseAmount(extractFirstTag(lb, 'LineExtensionAmount')) / cantidad);
+        lineExt > 0
+          ? Math.round(lineExt / cantidad)
+          : parseAmount(extractFirstTag(priceBlock, 'PriceAmount'));
       return { descripcion: desc, cantidad, valorUnitario: unitVal };
     })
     .filter((i) => i.valorUnitario > 0);
@@ -215,6 +232,7 @@ export function parsearFacturaXmlUbl(xmlText: string): FacturaXmlParseada {
     cufe,
     subtotal: finalSubtotal,
     iva,
+    otrosImpuestos,
     total,
     descripcion,
     items,
@@ -254,13 +272,15 @@ export function construirAsientoFactura(params: {
   descripcion: string;
   subtotal: number;
   iva: number;
+  otrosImpuestos?: number;
   tercero?: Tercero;
   aplicarRetenciones: boolean;
   esDocumentoSoporte?: boolean;
 }): { lineas: Linea[]; retenciones: Retencion[]; notas: string[] } {
   const subtotal = Math.max(0, Math.round(params.subtotal));
   const iva = Math.max(0, Math.round(params.iva));
-  const total = subtotal + iva;
+  const otrosImpuestos = Math.max(0, Math.round(params.otrosImpuestos ?? 0));
+  const total = subtotal + iva + otrosImpuestos;
   const terceroId = params.tercero?.id;
 
   const retenciones: Retencion[] = [];
@@ -312,8 +332,11 @@ export function construirAsientoFactura(params: {
     {
       id: 'l-1',
       cuenta: params.cuentaGasto,
-      descripcion: params.descripcion,
-      debito: subtotal,
+      descripcion:
+        otrosImpuestos > 0
+          ? `${params.descripcion} (incl. otros impuestos $${otrosImpuestos.toLocaleString('es-CO')})`
+          : params.descripcion,
+      debito: subtotal + otrosImpuestos,
       credito: 0,
       terceroId,
     },
@@ -373,9 +396,11 @@ export function construirDocumentoFactura(params: {
   items: DocItem[];
   subtotal: number;
   iva: number;
+  otrosImpuestos?: number;
   retenciones: Retencion[];
   xml?: string;
 }): Documento {
+  const otros = Math.max(0, Math.round(params.otrosImpuestos ?? 0));
   return {
     clase: params.clase,
     numero: params.numero,
@@ -386,7 +411,7 @@ export function construirDocumentoFactura(params: {
     items: params.items,
     subtotal: params.subtotal,
     iva: params.iva,
-    total: params.subtotal + params.iva,
+    total: params.subtotal + params.iva + otros,
     retenciones: params.retenciones,
     xml: params.xml,
   };

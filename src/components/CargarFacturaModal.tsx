@@ -59,6 +59,7 @@ export function CargarFacturaModal({
   const [descripcion, setDescripcion] = useState('');
   const [subtotal, setSubtotal] = useState(0);
   const [iva, setIva] = useState(0);
+  const [otrosImpuestos, setOtrosImpuestos] = useState(0);
   const [aplicarRetenciones, setAplicarRetenciones] = useState(true);
   const [items, setItems] = useState<DocItem[]>([]);
   const [xmlRaw, setXmlRaw] = useState<string | undefined>(undefined);
@@ -76,14 +77,18 @@ export function CargarFacturaModal({
         descripcion: descripcion.trim() || `Factura ${numero || 'sin número'}`,
         subtotal,
         iva,
+        otrosImpuestos,
         tercero: proveedorSeleccionado,
         aplicarRetenciones,
         esDocumentoSoporte: tipo === 'DS',
       }),
-    [cuentaGasto, descripcion, numero, subtotal, iva, proveedorSeleccionado, aplicarRetenciones, tipo],
+    [cuentaGasto, descripcion, numero, subtotal, iva, otrosImpuestos, proveedorSeleccionado, aplicarRetenciones, tipo],
   );
 
-  const totalFactura = Math.max(0, Math.round(subtotal)) + Math.max(0, Math.round(iva));
+  const totalFactura =
+    Math.max(0, Math.round(subtotal)) +
+    Math.max(0, Math.round(iva)) +
+    Math.max(0, Math.round(otrosImpuestos));
   const totalRetenciones = preview.retenciones.reduce((a, r) => a + r.valor, 0);
   const netoPagar = Math.max(0, totalFactura - totalRetenciones);
 
@@ -100,6 +105,7 @@ export function CargarFacturaModal({
       setCufe(parsed.cufe ?? '');
       setSubtotal(parsed.subtotal);
       setIva(parsed.iva);
+      setOtrosImpuestos(parsed.otrosImpuestos);
       setDescripcion(parsed.descripcion);
       setItems(parsed.items);
       setXmlRaw(parsed.xmlOriginal);
@@ -186,6 +192,7 @@ export function CargarFacturaModal({
         items: docItems,
         subtotal: Math.round(subtotal),
         iva: Math.round(iva),
+        otrosImpuestos: Math.round(otrosImpuestos),
         retenciones: preview.retenciones,
         xml: xmlRaw,
       });
@@ -406,6 +413,18 @@ export function CargarFacturaModal({
               value={iva || ''}
               placeholder="532000"
               onChange={(e) => setIva(Number(e.target.value) || 0)}
+              style={{ width: '100%', marginTop: 4 }}
+            />
+          </label>
+          <label className="campo">
+            <small>Otros impuestos (ICUI / INC)</small>
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={otrosImpuestos || ''}
+              placeholder="0"
+              onChange={(e) => setOtrosImpuestos(Number(e.target.value) || 0)}
               style={{ width: '100%', marginTop: 4 }}
             />
           </label>
