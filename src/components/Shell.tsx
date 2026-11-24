@@ -156,6 +156,8 @@ export function Topbar({
   );
 }
 
+const CONSEJO_HIDDEN_VIEWS = new Set<ViewKey>(['bandeja', 'cierre', 'ajustes']);
+
 export function Sidebar({
   view,
   setView,
@@ -164,6 +166,7 @@ export function Sidebar({
   periodo,
   bloqueado,
   isSuperAdmin,
+  userRole,
 }: {
   view: ViewKey;
   setView: (v: ViewKey) => void;
@@ -172,7 +175,15 @@ export function Sidebar({
   periodo: string;
   bloqueado: boolean;
   isSuperAdmin?: boolean;
+  userRole?: string;
 }) {
+  const navFiltrado =
+    userRole === 'CONSEJO'
+      ? NAV.map((g) => ({
+          ...g,
+          items: g.items.filter((it) => !CONSEJO_HIDDEN_VIEWS.has(it.key)),
+        })).filter((g) => g.items.length > 0)
+      : NAV;
   return (
     <aside className="sidebar">
       <nav>
@@ -188,7 +199,7 @@ export function Sidebar({
             </button>
           </div>
         )}
-        {NAV.map((grupo) => (
+        {navFiltrado.map((grupo) => (
           <div key={grupo.grupo} className="nav-group">
             <small>{grupo.grupo}</small>
             {grupo.items.map((item) => (

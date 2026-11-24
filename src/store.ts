@@ -357,8 +357,33 @@ export function getEstado(): EstadoApp {
   return state;
 }
 
-export function empresaActiva(estado: EstadoApp) {
-  return DATOS.companies.find((c) => c.id === estado.activeCompanyId) ?? DATOS.companies[0];
+const EMPTY_COMPANY: Copropiedad = {
+  id: '',
+  nit: 'Sin NIT',
+  razonSocial: 'Sin copropiedades registradas',
+  nombreCorto: 'Sin conjunto',
+  sigla: 'PH',
+  ciudad: 'Colombia',
+  direccion: '',
+  grupoNiif: 3,
+  fondoImprevistosPct: 1,
+  tasaMoraMensual: 1.5,
+  diaCorteProntoPago: 10,
+  descuentoProntoPagoPct: 0,
+  llaveBreB: '',
+  presupuestoAnual: 0,
+  periodoActual: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+  saldosIniciales: {},
+  escala: 1,
+  color: '#0F766E',
+};
+
+export function tieneCopropiedades(): boolean {
+  return DATOS.companies.length > 0;
+}
+
+export function empresaActiva(estado: EstadoApp): Copropiedad {
+  return DATOS.companies.find((c) => c.id === estado.activeCompanyId) ?? DATOS.companies[0] ?? EMPTY_COMPANY;
 }
 
 export function unidadesDe(estado: EstadoApp) {
@@ -437,6 +462,7 @@ export const acciones = {
       try {
         const res = await loginApi(email, password);
         setAuthSession(res.user, res.token);
+        await bootstrapFromApi();
         setSyncStatus({ syncing: false, lastError: null });
         return { ok: true, detalle: `${res.user.nombre} · ${res.user.rol}` };
       } catch (e: unknown) {
@@ -472,6 +498,32 @@ export const acciones = {
   cerrarSesion() {
     const def = defaultAuthSession();
     setAuthSession(def.user, null);
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(KEY);
+    } catch {
+      // Ignorar
+    }
+    if (apiEnabled) {
+      DATOS = {
+        ...DATOS,
+        companies: [],
+        units: [],
+        terceros: [],
+        rubros: [],
+        comprobantes: [],
+        preAsientos: [],
+      };
+      commitLocal({
+        version: VERSION,
+        activeCompanyId: '',
+        periodo: EMPTY_COMPANY.periodoActual,
+        preAsientos: [],
+        comprobantes: [],
+        periodosCerrados: {},
+        auditoria: [],
+      });
+      void bootstrapFromApi();
+    }
   },
 
   async cambiarPassword(currentPassword: string, newPassword: string): Promise<Resultado> {
@@ -1550,7 +1602,18 @@ async function bootstrapFromApi() {
     const puc = await fetchPucApi().catch(() => []);
     puc.map(mapBackendAccount).forEach(registerCuentaPuc);
     if (boot?.estado) {
-      commitLocal(boot.estado);
+      const nextEstado: EstadoApp = {
+        ...boot.estado,
+        activeCompanyId: DATOS.companies.some((c) => c.id === boot.estado.activeCompanyId)
+          ? boot.estado.activeCompanyId
+          : (DATOS.companies[0]?.id ?? ''),
+        periodo:
+          DATOS.companies.find((c) => c.id === boot.estado.activeCompanyId)?.periodoActual ??
+          DATOS.companies[0]?.periodoActual ??
+          boot.estado.periodo ??
+          EMPTY_COMPANY.periodoActual,
+      };
+      commitLocal(nextEstado);
     }
     const mode = boot?.mode === 'postgres' ? 'postgres' : 'demo-memory';
     setSyncStatus({ mode, syncing: false, lastError: null });

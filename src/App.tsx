@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PreAsiento } from './domain/types';
 import { acarrearPreAsiento } from './domain/engine';
-import { acciones, empresaActiva, esPeriodoBloqueado, tienePermiso, useAuth, useEstado, useSyncStatus, DATOS } from './store';
+import { acciones, empresaActiva, esPeriodoBloqueado, tieneCopropiedades, tienePermiso, useAuth, useEstado, useSyncStatus, DATOS } from './store';
 import { fmtPeriodo } from './domain/format';
 import { FKeyBar, MobileBottomNav, MobileDrawer, Sidebar, Topbar } from './components/Shell';
 import { AyudaModal, CommandPalette, EmpresasModal, PeriodosModal } from './components/Overlays';
 import { AuthModal } from './components/AuthModal';
 import { CopilotoEveModal } from './components/CopilotoEveModal';
 import { NuevaCopropiedadModal } from './components/NuevaCopropiedadModal';
-import { ToastStack } from './components/ui';
+import { Badge, Btn, ToastStack } from './components/ui';
 import { MODO_COUNT, type FiltrosVista, type Toast, type ToastData, type ViewKey, type VistaProps } from './ui-types';
 import { Bandeja } from './views/Bandeja';
 import { Libro } from './views/Libro';
@@ -218,6 +218,51 @@ export default function App() {
   };
 
   const renderVista = () => {
+    if (view === 'admin') {
+      return isSuperAdmin ? <AdminPanel toast={toast} /> : null;
+    }
+    if (!tieneCopropiedades()) {
+      return (
+        <div className="page" style={{ maxWidth: 640, margin: '28px auto' }}>
+          <section className="card" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <Badge tone="ok">{auth.user.planNombre ?? 'PRUEBA'}</Badge>
+              <Badge tone="neutral">
+                Cupo: 0 / {auth.user.maxCopropiedades ?? 1} copropiedades
+              </Badge>
+            </div>
+            <h2 style={{ margin: 0, fontSize: 20, letterSpacing: '-0.02em' }}>
+              Bienvenido a Vértika, {auth.user.nombre}
+            </h2>
+            <p className="card-note" style={{ margin: 0, lineHeight: 1.6 }}>
+              Tu espacio contable está completamente limpio y aislado. Crea tu primera copropiedad para
+              inicializar automáticamente el catálogo PUC ESAL (Ley 675), rubros presupuestales y libros
+              contables.
+            </p>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+              {puedeCrearEmpresa ? (
+                <Btn
+                  variant="primary"
+                  icon="plus"
+                  onClick={() => setOverlay('nueva-empresa')}
+                >
+                  Crear primera copropiedad
+                </Btn>
+              ) : (
+                <p className="card-note" style={{ margin: 0 }}>
+                  Tu usuario aún no tiene copropiedades asignadas. Solicita acceso a tu contador.
+                </p>
+              )}
+              {isSuperAdmin && (
+                <Btn variant="outline" icon="shield" onClick={() => setView('admin')}>
+                  Ir a Control de plataforma
+                </Btn>
+              )}
+            </div>
+          </section>
+        </div>
+      );
+    }
     switch (view) {
       case 'bandeja':
         return (
@@ -246,8 +291,6 @@ export default function App() {
         return <Cierre {...vistaProps} />;
       case 'ajustes':
         return <Ajustes {...vistaProps} />;
-      case 'admin':
-        return isSuperAdmin ? <AdminPanel toast={toast} /> : null;
       default:
         return null;
     }
@@ -279,6 +322,7 @@ export default function App() {
           periodo={estado.periodo}
           bloqueado={bloqueado}
           isSuperAdmin={isSuperAdmin}
+          userRole={auth.user.rol}
         />
         <main className="main">{renderVista()}</main>
       </div>

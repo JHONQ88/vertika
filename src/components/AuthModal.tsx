@@ -32,7 +32,7 @@ export function AuthModal({
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [nuevoPassword, setNuevoPassword] = useState('');
   const [nuevoRol, setNuevoRol] = useState<UserRole>('ADMINISTRADOR');
-  const [alcanceEmpresa, setAlcanceEmpresa] = useState<string>('ALL');
+  const [alcanceEmpresa, setAlcanceEmpresa] = useState<string>(() => DATOS.companies[0]?.id ?? 'ALL');
 
   const esSuperAdmin = user.rol === 'SUPER_ADMIN' || user.isSuperAdmin;
   const puedeCrearUsuarios =
@@ -95,12 +95,16 @@ export function AuthModal({
     e.preventDefault();
     setCargando(true);
     try {
+      const targetCompany =
+        nuevoRol === 'CONSEJO' && alcanceEmpresa === 'ALL'
+          ? (DATOS.companies[0]?.id ?? '')
+          : alcanceEmpresa;
       const res = await acciones.crearUsuario({
         email: nuevoEmail,
         nombre: nuevoNombre,
         password: nuevoPassword,
         rol: nuevoRol,
-        companyIds: alcanceEmpresa === 'ALL' ? undefined : [alcanceEmpresa],
+        companyIds: targetCompany === 'ALL' || !targetCompany ? undefined : [targetCompany],
       });
       if (res.ok) {
         toast({ tone: 'ok', title: 'Usuario creado', msg: res.detalle });
@@ -322,7 +326,13 @@ export function AuthModal({
               <small>Rol asignado</small>
               <select
                 value={nuevoRol}
-                onChange={(e) => setNuevoRol(e.target.value as UserRole)}
+                onChange={(e) => {
+                  const nextRol = e.target.value as UserRole;
+                  setNuevoRol(nextRol);
+                  if (nextRol === 'CONSEJO' && alcanceEmpresa === 'ALL' && DATOS.companies[0]?.id) {
+                    setAlcanceEmpresa(DATOS.companies[0].id);
+                  }
+                }}
                 style={{ width: '100%', marginTop: 4 }}
               >
                 {rolesPermitidos.map((r) => (
@@ -335,11 +345,11 @@ export function AuthModal({
             <label className="campo">
               <small>Copropiedades permitidas</small>
               <select
-                value={alcanceEmpresa}
+                value={nuevoRol === 'CONSEJO' && alcanceEmpresa === 'ALL' ? (DATOS.companies[0]?.id ?? '') : alcanceEmpresa}
                 onChange={(e) => setAlcanceEmpresa(e.target.value)}
                 style={{ width: '100%', marginTop: 4 }}
               >
-                <option value="ALL">Todas las copropiedades</option>
+                {nuevoRol !== 'CONSEJO' && <option value="ALL">Todas mis copropiedades</option>}
                 {DATOS.companies.map((c) => (
                   <option key={c.id} value={c.id}>
                     Solo {c.nombreCorto} ({c.id})

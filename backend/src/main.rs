@@ -289,6 +289,8 @@ fn filter_estado_by_companies(val: &mut Value, allowed: &[String]) {
         if !active_allowed {
             obj.insert("activeCompanyId".into(), Value::String(first.clone()));
         }
+    } else {
+        obj.insert("activeCompanyId".into(), Value::String(String::new()));
     }
 }
 
@@ -296,7 +298,7 @@ fn filter_bootstrap_by_companies(val: &mut Value, allowed: &[String]) {
     if let Some(datos) = val.get_mut("datos").and_then(|v| v.as_object_mut()) {
         filter_array_by_company(datos, "companies", "id", allowed, false);
         filter_array_by_company(datos, "units", "empresaId", allowed, false);
-        filter_array_by_company(datos, "terceros", "empresaId", allowed, true);
+        filter_array_by_company(datos, "terceros", "empresaId", allowed, !allowed.is_empty());
         filter_array_by_company(datos, "rubros", "empresaId", allowed, false);
         filter_array_by_company(datos, "comprobantes", "empresaId", allowed, false);
         filter_array_by_company(datos, "preAsientos", "empresaId", allowed, false);
