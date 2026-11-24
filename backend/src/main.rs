@@ -55,22 +55,16 @@ impl AppState {
 
         let database_url = std::env::var("DATABASE_URL").ok();
         let store = match database_url {
-            Some(url) if !url.trim().is_empty() => match Db::connect(&url).await {
-                Ok(db) => match PostgresRepo::init(db, seed.clone(), seed_demo).await {
-                    Ok(pg) => {
-                        tracing::info!("Conectado a PostgreSQL, migraciones listas (seed_demo={seed_demo})");
-                        Store::Postgres(pg)
-                    }
-                    Err(e) => {
-                        tracing::error!(error = ?e, "Error inicializando repositorio PostgreSQL, usando memoria");
-                        Store::Memory(MemoryRepo::new(seed).expect("seed válido"))
-                    }
-                },
-                Err(e) => {
-                    tracing::error!(error = %e, "No se pudo conectar a PostgreSQL, usando modo memoria");
-                    Store::Memory(MemoryRepo::new(seed).expect("seed válido"))
-                }
-            },
+            Some(url) if !url.trim().is_empty() => {
+                let db = Db::connect(&url)
+                    .await
+                    .expect("No se pudo conectar a PostgreSQL con DATABASE_URL configurado");
+                let pg = PostgresRepo::init(db, seed, seed_demo)
+                    .await
+                    .expect("Error inicializando repositorio PostgreSQL y migraciones");
+                tracing::info!("Conectado a PostgreSQL, migraciones listas (seed_demo={seed_demo})");
+                Store::Postgres(pg)
+            }
             _ => Store::Memory(MemoryRepo::new(seed).expect("seed válido")),
         };
         Self {
@@ -310,15 +304,15 @@ async fn auth_login(
     headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
-    let rate_key = auth::login_rate_key(&headers, &req.email);
-    state.login_limiter.check(&rate_key)?;
+    let (ip_key, email_key) = auth::login_rate_keys(&headers, &req.email);
+    state.login_limiter.check(&ip_key, &email_key)?;
     let user = match state.store.authenticate(&req.email, &req.password).await {
         Ok(u) => {
-            state.login_limiter.clear(&rate_key);
+            state.login_limiter.clear(&ip_key, &email_key);
             u
         }
         Err(e) => {
-            state.login_limiter.record_failure(&rate_key);
+            state.login_limiter.record_failure(&ip_key, &email_key);
             return Err(e);
         }
     };
@@ -347,10 +341,41 @@ async fn auth_change_password(
 async fn auth_create_user(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(req): Json<CreateUserRequest>,
+    Json(mut req): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador, Role::Administrador])?;
+    let required_roles: &[Role] = if req.rol == Role::Contador {
+        &[Role::Contador]
+    } else {
+        &[Role::Contador, Role::Administrador]
+    };
+    ctx.require_any_role(required_roles)?;
+
+    let requested: Vec<String> = req
+        .company_ids
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let scoped_companies = if requested.is_empty() {
+        let managed = ctx.managed_company_ids(required_roles);
+        if managed.is_empty() {
+            return Err(ApiError::Forbidden(
+                "No tienes copropiedades autorizadas para crear este tipo de usuario.".into(),
+            ));
+        }
+        managed
+    } else {
+        for cid in &requested {
+            ctx.require_company_roles(cid, required_roles)?;
+        }
+        requested
+    };
+    req.company_ids = Some(scoped_companies);
+
     let user = state.store.create_user(req).await?;
     Ok((StatusCode::CREATED, Json(json!({ "user": user }))))
 }
@@ -382,8 +407,15 @@ async fn put_state(
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    if !state.seed_demo {
+        return Err(ApiError::Forbidden(
+            "PUT /api/v1/state está deshabilitado en producción (SEED_DEMO=false).".into(),
+        ));
+    }
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    for cid in state.store.all_company_ids().await? {
+        ctx.require_company_roles(&cid, &[Role::Contador])?;
+    }
     Ok(Json(state.store.put_state(payload).await?))
 }
 
@@ -397,7 +429,9 @@ async fn reset_state(
         ));
     }
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    for cid in state.store.all_company_ids().await? {
+        ctx.require_company_roles(&cid, &[Role::Contador])?;
+    }
     Ok(Json(state.store.reset().await?))
 }
 
@@ -515,7 +549,12 @@ async fn update_pre_entry_lines(
     Json(req): Json<UpdatePreEntryLinesRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    let company_id = state
+        .store
+        .pre_entry_company_id(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Pre-asiento '{id}' no encontrado.")))?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
     let updated = state.store.update_pre_entry_lines(&id, req.lineas).await?;
     Ok(Json(serde_json::to_value(updated).unwrap_or_else(|_| json!({}))))
 }
@@ -526,7 +565,12 @@ async fn approve_pre_entry(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    let company_id = state
+        .store
+        .pre_entry_company_id(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Pre-asiento '{id}' no encontrado.")))?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
     let out = state
         .store
         .approve_pre_entry(&id, &ctx.actor_label())
@@ -540,7 +584,12 @@ async fn reject_pre_entry(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    let company_id = state
+        .store
+        .pre_entry_company_id(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Pre-asiento '{id}' no encontrado.")))?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
     let ev = state
         .store
         .reject_pre_entry(&id, &ctx.actor_label())
@@ -572,7 +621,12 @@ async fn void_entry(
     body: Option<Json<VoidEntryRequest>>,
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    ctx.require_any_role(&[Role::Contador])?;
+    let company_id = state
+        .store
+        .entry_company_id(&id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Comprobante '{id}' no encontrado.")))?;
+    ctx.require_company_roles(&company_id, &[Role::Contador])?;
     let reason = body.and_then(|b| b.0.reason);
     let out = state
         .store
@@ -1992,6 +2046,273 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn goldfish_security_fixes_work() {
+        let router = build_router(Arc::new(AppState::demo_for_tests_with_auth(true)));
+        let tok_global_contador = login_as(&router, "contador@vertika.co").await;
+        let tok_admin = login_as(&router, "admin@vertika.co").await;
+
+        // C2a: ADMINISTRADOR cannot create a CONTADOR user -> 403
+        let esc_role = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_admin}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "escalado@vertika.co",
+                            "nombre": "Escalado",
+                            "password": "claveSegura2026",
+                            "rol": "CONTADOR",
+                            "companyIds": ["altavista"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(esc_role.status(), StatusCode::FORBIDDEN);
+
+        // Create a CONTADOR scoped strictly to ["altavista"]
+        let created_scoped = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_global_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "c.altavista@vertika.co",
+                            "nombre": "Contador Solo Altavista",
+                            "password": "claveSegura2026",
+                            "rol": "CONTADOR",
+                            "companyIds": ["altavista"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created_scoped.status(), StatusCode::CREATED);
+
+        let login_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "c.altavista@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tok_scoped = json_body(login_res).await["token"].as_str().unwrap().to_string();
+
+        // C2b: Scoped CONTADOR cannot create users for colina -> 403
+        let esc_tenant = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "otro.colina@vertika.co",
+                            "nombre": "Otro Colina",
+                            "password": "claveSegura2026",
+                            "rol": "CONSEJO",
+                            "companyIds": ["colina"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(esc_tenant.status(), StatusCode::FORBIDDEN);
+
+        // C2c: Omitting companyIds defaults strictly to caller's managed companies (only altavista)
+        let default_scope = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "asist.altavista@vertika.co",
+                            "nombre": "Asistente Altavista",
+                            "password": "claveSegura2026",
+                            "rol": "CONSEJO"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(default_scope.status(), StatusCode::CREATED);
+        let ds_body = json_body(default_scope).await;
+        let ds_roles = ds_body["user"]["roles"].as_array().unwrap();
+        assert_eq!(ds_roles.len(), 1);
+        assert_eq!(ds_roles[0]["company_id"], "altavista");
+
+        // Discover a Colina pre-entry ID and Colina entry ID using global contador
+        let boot_all = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/bootstrap")
+                    .header("authorization", format!("Bearer {tok_global_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let boot_json = json_body(boot_all).await;
+        let colina_pre_id = boot_json["estado"]["preAsientos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["empresaId"] == "colina")
+            .expect("colina pre-entry")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let colina_entry_id = boot_json["estado"]["comprobantes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["empresaId"] == "colina" && c["periodo"] == "2026-11")
+            .expect("colina entry")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // C1: Scoped CONTADOR (altavista) gets 403 on Colina pre-entry approve/reject/lines and entry void
+        let cross_approve = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/pre-entries/{colina_pre_id}/approve"))
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_approve.status(), StatusCode::FORBIDDEN);
+
+        let cross_reject = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/pre-entries/{colina_pre_id}/reject"))
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_reject.status(), StatusCode::FORBIDDEN);
+
+        let cross_void = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/entries/{colina_entry_id}/void"))
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_void.status(), StatusCode::FORBIDDEN);
+
+        // C5: Scoped CONTADOR cannot wipe all tenants via reset or put_state -> 403
+        let cross_reset = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/reset")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_reset.status(), StatusCode::FORBIDDEN);
+
+        let cross_put = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/state")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "version": 4 }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_put.status(), StatusCode::FORBIDDEN);
+
+        // H4: Updating a shared global third party (prov-atlas) from a tenant -> 403
+        let mut_global_tp = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/companies/altavista/third-parties/prov-atlas")
+                    .header("authorization", format!("Bearer {tok_scoped}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nombre": "Atlas Hacked",
+                            "tipo": "PROVEEDOR",
+                            "documento": "900.412.887",
+                            "retefuentePct": 0,
+                            "reteicaPct": 0,
+                            "reteivaPct": 0
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mut_global_tp.status(), StatusCode::FORBIDDEN);
+
+        // H3: Rotating X-Forwarded-For on every attempt STILL triggers 429 on 6th failure
+        for i in 0..5 {
+            let fail = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/auth/login")
+                        .header("x-forwarded-for", format!("198.51.100.{i}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({ "email": "rotado@vertika.co", "password": "wrong" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(fail.status(), StatusCode::UNAUTHORIZED);
+        }
+        let blocked_rotated = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("x-forwarded-for", "198.51.100.99")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "rotado@vertika.co", "password": "wrong" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked_rotated.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

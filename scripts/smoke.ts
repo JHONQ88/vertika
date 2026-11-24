@@ -24,6 +24,13 @@ import {
   generarMediosMagneticosXML,
   generarPazYSalvoHTML,
 } from '../src/domain/reports';
+import {
+  buscarTerceroPorNit,
+  construirAsientoFactura,
+  EJEMPLO_XML_DIAN_UBL,
+  parsearFacturaXmlUbl,
+  sugerirCuentaGasto,
+} from '../src/domain/ubl';
 
 const datos = buildSeed();
 let fallos = 0;
@@ -348,6 +355,46 @@ check(
   'Paz y Salvo Ley 675 HTML generado',
   pazHtml.includes('Certificado de Paz y Salvo') && pazHtml.includes('Ley 675 de 2001'),
 );
+
+console.log('\n9. Ingesta XML UBL 2.1 DIAN y pre-asiento automático');
+{
+  const parsed = parsearFacturaXmlUbl(EJEMPLO_XML_DIAN_UBL);
+  check(
+    'XML UBL 2.1 extrae número, subtotal, IVA, total y CUFE',
+    parsed.numero === 'FE-EA-2026-4418' &&
+      parsed.subtotal === 2_800_000 &&
+      parsed.iva === 532_000 &&
+      parsed.total === 3_332_000 &&
+      Boolean(parsed.cufe && parsed.cufe.length > 40),
+  );
+  const provMatch = buscarTerceroPorNit(parsed.nit, datos.terceros);
+  check(
+    'NIT del XML coincide con proveedor del catálogo',
+    provMatch?.id === 'prov-elevadores',
+  );
+  const cuenta = sugerirCuentaGasto(`${parsed.descripcion} ${parsed.emisor}`);
+  check('Cuenta PUC sugerida para ascensores es 514505', cuenta === '514505');
+  check(
+    'Todas las cuentas sugeridas existen en PUC ESAL y Energía/Acueducto no están cruzadas',
+    sugerirCuentaGasto('Energía eléctrica Enel') === '513525' &&
+      sugerirCuentaGasto('Acueducto EAAB') === '513530' &&
+      Boolean(CUENTA_MAP[sugerirCuentaGasto('Jardinería')]) &&
+      Boolean(CUENTA_MAP[sugerirCuentaGasto('Póliza seguro')]) &&
+      Boolean(CUENTA_MAP[sugerirCuentaGasto('Honorarios contador')]),
+  );
+  const asiento = construirAsientoFactura({
+    cuentaGasto: cuenta,
+    descripcion: parsed.descripcion,
+    subtotal: parsed.subtotal,
+    iva: parsed.iva,
+    tercero: provMatch,
+    aplicarRetenciones: true,
+  });
+  check(
+    'Pre-asiento generado desde XML incluye retenciones y cuadra en partida doble',
+    asiento.retenciones.length === 3 && validarAsiento(asiento.lineas).ok,
+  );
+}
 
 console.log(
   fallos === 0

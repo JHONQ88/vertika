@@ -47,6 +47,7 @@ export default defineTool({
       method: 'POST',
       body: JSON.stringify(payload),
       signal: ctx.abortSignal,
+      sessionAuth: ctx.session.auth,
     });
   },
 });

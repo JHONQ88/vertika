@@ -1,12 +1,14 @@
+import { useState } from 'react';
 import type { Linea, PreAsiento } from '../domain/types';
 import { CUENTAS, CUENTA_MAP } from '../domain/puc';
 import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
-import { esPeriodoBloqueado, tercerosDe, acciones } from '../store';
+import { esPeriodoBloqueado, tercerosDe, acciones, tienePermiso, useAuth } from '../store';
 import { totalesLineas, validarAsiento } from '../domain/engine';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Empty, ProgressBar } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { DocumentoView } from '../components/Documento';
+import { CargarFacturaModal } from '../components/CargarFacturaModal';
 
 interface BandejaProps extends VistaProps {
   seleccionado: string | null;
@@ -21,30 +23,54 @@ let manualLineSeq = 0;
 export function Bandeja({
   empresa,
   estado,
+  toast,
   seleccionado,
   setSeleccionado,
   onAprobar,
   onRechazar,
   onAcarrear,
 }: BandejaProps) {
+  const [modalFactura, setModalFactura] = useState(false);
+  const { user } = useAuth();
   const pendientes = estado.preAsientos.filter(
     (p) => p.empresaId === empresa.id && p.periodo === estado.periodo,
   );
   const pre = pendientes.find((p) => p.id === seleccionado) ?? pendientes[0];
   const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
+  const puedeCargar = tienePermiso(user.rol, 'maestros') && !bloqueado;
   const terceros = tercerosDe(estado);
 
   if (!pre) {
     return (
-      <Empty
-        icon="check"
-        title="Bandeja limpia"
-        text={
-          pendientes.length === 0
-            ? `No hay pre-asientos pendientes para ${fmtPeriodo(estado.periodo)}. Los agentes de IA irán dejando aquí las facturas, recibos y documentos soporte para tu aprobación.`
-            : 'No hay pre-asientos para este periodo.'
-        }
-      />
+      <>
+        <Empty
+          icon="check"
+          title="Bandeja limpia"
+          text={
+            pendientes.length === 0
+              ? `No hay pre-asientos pendientes para ${fmtPeriodo(estado.periodo)}. Puedes cargar una factura XML DIAN o esperar a que los agentes de IA radiquen nuevos soportes.`
+              : 'No hay pre-asientos para este periodo.'
+          }
+          action={
+            puedeCargar ? (
+              <Btn variant="primary" size="sm" icon="plus" onClick={() => setModalFactura(true)}>
+                Cargar factura / XML
+              </Btn>
+            ) : undefined
+          }
+        />
+        {modalFactura && (
+          <CargarFacturaModal
+            open={modalFactura}
+            onClose={() => setModalFactura(false)}
+            empresa={empresa}
+            periodo={estado.periodo}
+            terceros={terceros}
+            onCreado={(id) => setSeleccionado(id)}
+            toast={toast}
+          />
+        )}
+      </>
     );
   }
 
@@ -91,6 +117,19 @@ export function Bandeja({
           </div>
           <Badge tone={pendientes.length > 0 ? 'warn' : 'ok'}>{pendientes.length}</Badge>
         </div>
+        {puedeCargar && (
+          <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--line)' }}>
+            <Btn
+              variant="primary"
+              size="sm"
+              icon="plus"
+              onClick={() => setModalFactura(true)}
+              style={{ width: '100%', justifyContent: 'center' }}
+            >
+              Cargar factura / XML DIAN
+            </Btn>
+          </div>
+        )}
 
         {pendientes.map((p) => {
           const activo = p.id === pre.id;
@@ -291,6 +330,17 @@ export function Bandeja({
           </div>
         </footer>
       </section>
+      {modalFactura && (
+        <CargarFacturaModal
+          open={modalFactura}
+          onClose={() => setModalFactura(false)}
+          empresa={empresa}
+          periodo={estado.periodo}
+          terceros={terceros}
+          onCreado={(id) => setSeleccionado(id)}
+          toast={toast}
+        />
+      )}
     </div>
   );
 }

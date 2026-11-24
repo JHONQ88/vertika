@@ -1,6 +1,7 @@
 import type {
   Comprobante,
   Copropiedad,
+  Documento,
   EstadoApp,
   EventoAuditoria,
   Linea,
@@ -30,10 +31,29 @@ export interface LoginResponse {
 
 const TOKEN_KEY = 'vertika.token.v1';
 
+function isJwtExpired(token: string): boolean {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=');
+    const payload = JSON.parse(atob(padded)) as { exp?: number };
+    return typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now();
+  } catch {
+    return false;
+  }
+}
+
 export function getAuthToken(): string | null {
   try {
     if (typeof localStorage === 'undefined') return null;
-    return localStorage.getItem(TOKEN_KEY);
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    if (isJwtExpired(raw)) {
+      localStorage.removeItem(TOKEN_KEY);
+      return null;
+    }
+    return raw;
   } catch {
     return null;
   }
@@ -166,6 +186,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
+    if (res.status === 401 && token && !path.startsWith('/api/v1/auth/login')) {
+      setAuthToken(null);
+    }
     const text = await res.text().catch(() => '');
     let msg = text;
     if (text) {
@@ -233,6 +256,36 @@ export async function saveState(estado: EstadoApp): Promise<void> {
 
 export async function resetRemote(): Promise<BootstrapPayload | EstadoApp> {
   return request('/api/v1/reset', { method: 'POST' });
+}
+
+export interface CreatePreEntryPayload {
+  companyId: string;
+  period: string;
+  entryType: 'CC' | 'DS' | 'RC' | 'CE' | 'NC';
+  date: string;
+  agent?: string;
+  confianza?: number;
+  terceroId: string;
+  unidadId?: string;
+  rubroId?: string;
+  description: string;
+  document?: Documento;
+  lines: Linea[];
+  notes?: string[];
+}
+
+export interface CreatePreEntryResponse {
+  preAsiento: PreAsiento;
+  auditoria: EventoAuditoria;
+}
+
+export async function createPreEntryApi(
+  payload: CreatePreEntryPayload,
+): Promise<CreatePreEntryResponse> {
+  return request<CreatePreEntryResponse>('/api/v1/pre-entries', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function updatePreEntryLinesApi(id: string, lineas: Linea[]): Promise<PreAsiento> {

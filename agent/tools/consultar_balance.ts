@@ -20,7 +20,7 @@ export default defineTool({
     const per = period?.trim() || 'todos';
     return vertikaFetch<Record<string, unknown>>(
       `/api/v1/companies/${encodeURIComponent(companyId.trim())}/reports/balance?period=${encodeURIComponent(per)}`,
-      { signal: ctx.abortSignal },
+      { signal: ctx.abortSignal, sessionAuth: ctx.session.auth },
     );
   },
 });

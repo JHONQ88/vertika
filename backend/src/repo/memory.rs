@@ -1152,6 +1152,12 @@ impl MemoryRepo {
             .position(|t| t.id == tp_id && (t.empresa_id.is_none() || t.empresa_id.as_deref() == Some(company_id)))
             .ok_or_else(|| ApiError::NotFound(format!("Tercero '{tp_id}' no encontrado.")))?;
 
+        if g.datos.terceros[idx].empresa_id.is_none() {
+            return Err(ApiError::Forbidden(
+                "Los proveedores globales compartidos no pueden modificarse desde una copropiedad individual.".into(),
+            ));
+        }
+
         g.datos.terceros[idx].nombre = req.nombre.trim().into();
         g.datos.terceros[idx].tipo = req.tipo;
         g.datos.terceros[idx].documento = req.documento.trim().into();
@@ -1315,5 +1321,29 @@ impl MemoryRepo {
         g.estado.auditoria.insert(0, ev);
         g.estado.auditoria.truncate(200);
         Ok(updated)
+    }
+
+    pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {
+        let g = self.inner.read().await;
+        Ok(g.estado
+            .pre_asientos
+            .iter()
+            .find(|p| p.id == pre_id)
+            .or_else(|| g.datos.pre_asientos.iter().find(|p| p.id == pre_id))
+            .map(|p| p.empresa_id.clone()))
+    }
+
+    pub async fn entry_company_id(&self, entry_id: &str) -> Result<Option<String>, ApiError> {
+        let g = self.inner.read().await;
+        Ok(g.estado
+            .comprobantes
+            .iter()
+            .find(|c| c.id == entry_id)
+            .map(|c| c.empresa_id.clone()))
+    }
+
+    pub async fn all_company_ids(&self) -> Result<Vec<String>, ApiError> {
+        let g = self.inner.read().await;
+        Ok(g.datos.companies.iter().map(|c| c.id.clone()).collect())
     }
 }

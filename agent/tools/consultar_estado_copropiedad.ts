@@ -79,6 +79,7 @@ export default defineTool({
     const { vertikaFetch } = await import('../lib/vertika-api.ts');
     const data = await vertikaFetch<BootstrapPayload>('/api/v1/bootstrap', {
       signal: ctx.abortSignal,
+      sessionAuth: ctx.session.auth,
     });
 
     const target = companyId?.trim();

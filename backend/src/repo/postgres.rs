@@ -546,6 +546,12 @@ impl PostgresRepo {
         lineas: Vec<FrontendLinea>,
         puc: &[LedgerAccount],
     ) -> Result<FrontendComprobante, ApiError> {
+        // Lock por copropiedad + tipo de documento para evitar colisión de consecutivos concurrentes
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(format!("{}:{tipo}", company.uuid))
+            .execute(&mut **tx)
+            .await?;
+
         let next_cons: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(consecutivo), 0) + 1
                FROM comprobantes_contables
@@ -1866,8 +1872,85 @@ impl PostgresRepo {
     ) -> Result<Vec<FrontendComprobante>, ApiError> {
         let mut tx = self.db.pool.begin().await?;
         let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let comp_rows = sqlx::query(
+            "SELECT c.id, COALESCE(c.clave_externa, c.id::text) AS ext_id,
+                    COALESCE(co.slug, co.id::text) AS company_slug,
+                    c.periodo, c.tipo_documento, c.consecutivo, c.fecha_contable,
+                    c.estado, c.origen_creacion, c.descripcion, c.referencia,
+                    c.total_debito, c.total_credito, COALESCE(c.hash_contenido, '') AS hash_contenido,
+                    COALESCE(c.creado_por, 'Sistema') AS creado_por, c.created_at
+               FROM comprobantes_contables c
+               JOIN copropiedades co ON co.id = c.copropiedad_id
+              WHERE c.copropiedad_id = $1
+                AND ($2::text IS NULL OR $2 = 'todos' OR c.periodo = $2)
+              ORDER BY c.fecha_contable, c.consecutivo, c.created_at",
+        )
+        .bind(company.uuid)
+        .bind(period)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let line_rows = sqlx::query(
+            "SELECT m.comprobante_id, COALESCE(m.clave_externa, m.id::text) AS ext_id,
+                    m.cuenta_codigo, m.descripcion, m.debito, m.credito,
+                    COALESCE(t.clave_externa, t.id::text) AS tp_ext,
+                    COALESCE(u.clave_externa, u.id::text) AS u_ext,
+                    COALESCE(r.clave_externa, r.id::text) AS r_ext
+               FROM movimientos_ledger m
+               JOIN comprobantes_contables c ON c.id = m.comprobante_id
+               LEFT JOIN terceros t ON t.id = m.tercero_id
+               LEFT JOIN unidades_inmobiliarias u ON u.id = m.unidad_id
+               LEFT JOIN rubros_presupuestales r ON r.id = m.rubro_id
+              WHERE c.copropiedad_id = $1
+                AND ($2::text IS NULL OR $2 = 'todos' OR c.periodo = $2)
+              ORDER BY m.comprobante_id, m.linea_orden, m.id",
+        )
+        .bind(company.uuid)
+        .bind(period)
+        .fetch_all(&mut *tx)
+        .await?;
         tx.commit().await?;
-        self.load_entries_query(Some(company.uuid), period).await
+
+        let mut lines_map: HashMap<Uuid, Vec<FrontendLinea>> = HashMap::new();
+        for lr in line_rows {
+            let cid: Uuid = lr.try_get("comprobante_id")?;
+            lines_map.entry(cid).or_default().push(FrontendLinea {
+                id: lr.try_get("ext_id")?,
+                cuenta: lr.try_get("cuenta_codigo")?,
+                descripcion: lr.try_get("descripcion")?,
+                debito: lr.try_get("debito")?,
+                credito: lr.try_get("credito")?,
+                tercero_id: lr.try_get("tp_ext")?,
+                unidad_id: lr.try_get("u_ext")?,
+                rubro_id: lr.try_get("r_ext")?,
+            });
+        }
+
+        let mut out = Vec::with_capacity(comp_rows.len());
+        for cr in comp_rows {
+            let cid: Uuid = cr.try_get("id")?;
+            let fecha: NaiveDate = cr.try_get("fecha_contable")?;
+            let created_at: DateTime<Utc> = cr.try_get("created_at")?;
+            out.push(FrontendComprobante {
+                id: cr.try_get("ext_id")?,
+                empresa_id: cr.try_get("company_slug")?,
+                periodo: cr.try_get::<String, _>("periodo")?.trim().to_string(),
+                tipo: cr.try_get("tipo_documento")?,
+                consecutivo: cr.try_get("consecutivo")?,
+                fecha: fecha.format("%Y-%m-%d").to_string(),
+                estado: cr.try_get("estado")?,
+                origen: cr.try_get("origen_creacion")?,
+                descripcion: cr.try_get("descripcion")?,
+                lineas: lines_map.remove(&cid).unwrap_or_default(),
+                total_debito: cr.try_get("total_debito")?,
+                total_credito: cr.try_get("total_credito")?,
+                referencia: cr.try_get("referencia")?,
+                hash: cr.try_get("hash_contenido")?,
+                creado_por: cr.try_get("creado_por")?,
+                created_at: created_at.to_rfc3339(),
+            });
+        }
+        Ok(out)
     }
 
     pub async fn trial_balance(
@@ -1878,7 +1961,6 @@ impl PostgresRepo {
         let mut tx = self.db.pool.begin().await?;
         let company = Self::resolve_company_tx(&mut tx, company_id).await?;
         let puc = Self::fetch_company_puc_tx(&mut tx, company.uuid).await?;
-        tx.commit().await?;
 
         let opening_balances: HashMap<String, Decimal> =
             serde_json::from_value(company.saldos_iniciales).unwrap_or_default();
@@ -1894,8 +1976,9 @@ impl PostgresRepo {
         )
         .bind(company.uuid)
         .bind(period)
-        .fetch_all(&self.db.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         let mut movement = HashMap::with_capacity(mov_rows.len());
         for mr in mov_rows {
@@ -1917,7 +2000,6 @@ impl PostgresRepo {
     pub async fn list_audit(&self, company_id: &str) -> Result<Vec<FrontendAuditoria>, ApiError> {
         let mut tx = self.db.pool.begin().await?;
         let company = Self::resolve_company_tx(&mut tx, company_id).await?;
-        tx.commit().await?;
 
         let rows = sqlx::query(
             "SELECT id, actor, accion, COALESCE(detalle, '') AS detalle, metadata, created_at
@@ -1927,8 +2009,9 @@ impl PostgresRepo {
               LIMIT 200",
         )
         .bind(company.uuid)
-        .fetch_all(&self.db.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
@@ -2631,6 +2714,11 @@ impl PostgresRepo {
         let tid: Uuid = tp_row.try_get("id")?;
         let ext_id: String = tp_row.try_get("ext_id")?;
         let cid: Option<Uuid> = tp_row.try_get("copropiedad_id")?;
+        if cid.is_none() {
+            return Err(ApiError::Forbidden(
+                "Los proveedores globales compartidos no pueden modificarse desde una copropiedad individual.".into(),
+            ));
+        }
         let dv = req.dv.filter(|s| !s.trim().is_empty());
 
         sqlx::query(
@@ -2873,6 +2961,43 @@ impl PostgresRepo {
             escala: r.try_get("escala")?,
             color: r.try_get("color")?,
         })
+    }
+
+    pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {
+        let slug: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(co.slug, co.id::text)
+               FROM pre_asientos p
+               JOIN copropiedades co ON co.id = p.copropiedad_id
+              WHERE p.clave_externa = $1 OR p.id::text = $1
+              LIMIT 1",
+        )
+        .bind(pre_id)
+        .fetch_optional(&self.db.pool)
+        .await?;
+        Ok(slug)
+    }
+
+    pub async fn entry_company_id(&self, entry_id: &str) -> Result<Option<String>, ApiError> {
+        let slug: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(co.slug, co.id::text)
+               FROM comprobantes_contables c
+               JOIN copropiedades co ON co.id = c.copropiedad_id
+              WHERE c.clave_externa = $1 OR c.id::text = $1
+              LIMIT 1",
+        )
+        .bind(entry_id)
+        .fetch_optional(&self.db.pool)
+        .await?;
+        Ok(slug)
+    }
+
+    pub async fn all_company_ids(&self) -> Result<Vec<String>, ApiError> {
+        let slugs: Vec<String> = sqlx::query_scalar(
+            "SELECT COALESCE(slug, id::text) FROM copropiedades ORDER BY created_at, slug",
+        )
+        .fetch_all(&self.db.pool)
+        .await?;
+        Ok(slugs)
     }
 }
 

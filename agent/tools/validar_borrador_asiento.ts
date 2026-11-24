@@ -50,6 +50,7 @@ export default defineTool({
       body: JSON.stringify(payload),
       allowStatuses: [422],
       signal: ctx.abortSignal,
+      sessionAuth: ctx.session.auth,
     });
   },
 });

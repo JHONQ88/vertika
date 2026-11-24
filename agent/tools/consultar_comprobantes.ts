@@ -47,7 +47,7 @@ export default defineTool({
       : '';
     const entries = await vertikaFetch<EntryDto[]>(
       `/api/v1/companies/${encodeURIComponent(companyId.trim())}/entries${qs}`,
-      { signal: ctx.abortSignal },
+      { signal: ctx.abortSignal, sessionAuth: ctx.session.auth },
     );
 
     const filtrados = tipo ? entries.filter((e) => e.tipo === tipo) : entries;

@@ -179,10 +179,20 @@ impl AuthContext {
     pub fn allowed_company_ids(&self) -> Vec<String> {
         self.user.roles.iter().map(|r| r.company_id.clone()).collect()
     }
+
+    pub fn managed_company_ids(&self, allowed: &[Role]) -> Vec<String> {
+        self.user
+            .roles
+            .iter()
+            .filter(|r| allowed.contains(&r.role))
+            .map(|r| r.company_id.clone())
+            .collect()
+    }
 }
 
 const LOGIN_RATE_WINDOW_SECS: i64 = 60;
 const LOGIN_RATE_MAX_FAILS: usize = 5;
+const LOGIN_RATE_MAX_TRACKED_KEYS: usize = 4_096;
 
 pub struct LoginRateLimiter {
     attempts: std::sync::Mutex<std::collections::HashMap<String, Vec<i64>>>,
@@ -195,10 +205,18 @@ impl LoginRateLimiter {
         }
     }
 
-    pub fn check(&self, key: &str) -> Result<(), ApiError> {
-        let now = Utc::now().timestamp();
-        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
-        let mut map = self.attempts.lock().expect("rate limiter lock");
+    fn prune_expired(map: &mut std::collections::HashMap<String, Vec<i64>>, cutoff: i64) {
+        map.retain(|_, timestamps| {
+            timestamps.retain(|&ts| ts > cutoff);
+            !timestamps.is_empty()
+        });
+    }
+
+    fn check_key(
+        map: &mut std::collections::HashMap<String, Vec<i64>>,
+        key: &str,
+        cutoff: i64,
+    ) -> Result<(), ApiError> {
         let recent_count = if let Some(timestamps) = map.get_mut(key) {
             timestamps.retain(|&ts| ts > cutoff);
             let len = timestamps.len();
@@ -218,22 +236,48 @@ impl LoginRateLimiter {
         Ok(())
     }
 
-    pub fn record_failure(&self, key: &str) {
-        let now = Utc::now().timestamp();
-        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
-        let mut map = self.attempts.lock().expect("rate limiter lock");
+    fn record_key(
+        map: &mut std::collections::HashMap<String, Vec<i64>>,
+        key: &str,
+        now: i64,
+        cutoff: i64,
+    ) {
+        if map.len() >= LOGIN_RATE_MAX_TRACKED_KEYS && !map.contains_key(key) {
+            Self::prune_expired(map, cutoff);
+            if map.len() >= LOGIN_RATE_MAX_TRACKED_KEYS {
+                map.clear();
+            }
+        }
         let entry = map.entry(key.to_string()).or_default();
         entry.retain(|&ts| ts > cutoff);
         entry.push(now);
     }
 
-    pub fn clear(&self, key: &str) {
+    pub fn check(&self, ip_key: &str, email_key: &str) -> Result<(), ApiError> {
+        let now = Utc::now().timestamp();
+        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
         let mut map = self.attempts.lock().expect("rate limiter lock");
-        map.remove(key);
+        Self::check_key(&mut map, ip_key, cutoff)?;
+        Self::check_key(&mut map, email_key, cutoff)?;
+        Ok(())
+    }
+
+    pub fn record_failure(&self, ip_key: &str, email_key: &str) {
+        let now = Utc::now().timestamp();
+        let cutoff = now - LOGIN_RATE_WINDOW_SECS;
+        let mut map = self.attempts.lock().expect("rate limiter lock");
+        Self::record_key(&mut map, ip_key, now, cutoff);
+        Self::record_key(&mut map, email_key, now, cutoff);
+    }
+
+    pub fn clear(&self, ip_key: &str, email_key: &str) {
+        let mut map = self.attempts.lock().expect("rate limiter lock");
+        map.remove(ip_key);
+        map.remove(email_key);
     }
 }
 
-pub fn login_rate_key(headers: &HeaderMap, email: &str) -> String {
+pub fn login_rate_keys(headers: &HeaderMap, email: &str) -> (String, String) {
     let ip = headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -248,7 +292,11 @@ pub fn login_rate_key(headers: &HeaderMap, email: &str) -> String {
                 .filter(|s| !s.is_empty())
         })
         .unwrap_or("local");
-    format!("{ip}|{}", email.trim().to_ascii_lowercase())
+    let normalized_email = email.trim().to_ascii_lowercase();
+    (
+        format!("ip:{ip}|{normalized_email}"),
+        format!("email:{normalized_email}"),
+    )
 }
 
 pub fn validate_production_secret(

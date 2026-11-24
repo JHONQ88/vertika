@@ -42,6 +42,7 @@ export default defineTool({
       : '';
     const accounts = await vertikaFetch<LedgerAccountDto[]>(`/api/v1/puc${qs}`, {
       signal: ctx.abortSignal,
+      sessionAuth: ctx.session.auth,
     });
 
     const needle = busqueda?.trim().toLowerCase() ?? '';

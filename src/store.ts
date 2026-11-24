@@ -25,6 +25,7 @@ import {
   changePasswordApi,
   closePeriodApi,
   createEntryApi,
+  createPreEntryApi,
   createPucAccountApi,
   createThirdPartyApi,
   createUnitApi,
@@ -46,6 +47,7 @@ import {
   type AuthUser,
   type BackendLedgerAccount,
   type CreateEntryPayload,
+  type CreatePreEntryPayload,
   type CreatePucPayload,
   type CreateUserPayload,
   type UpsertThirdPartyPayload,
@@ -545,6 +547,91 @@ export const acciones = {
           }),
         );
     }
+  },
+
+  async radicarPreAsiento(
+    payload: CreatePreEntryPayload,
+  ): Promise<Resultado & { preAsiento?: PreAsiento }> {
+    if (!tienePermiso(authSession.user.rol, 'maestros')) {
+      return {
+        ok: false,
+        error: `El rol ${authSession.user.rol} no puede radicar facturas en la Bandeja.`,
+      };
+    }
+    const valid = validarAsiento(payload.lines);
+    if (!valid.ok) {
+      return { ok: false, error: valid.errores[0] ?? 'El pre-asiento no cuadra.' };
+    }
+    if (apiEnabled) {
+      setSyncStatus({ syncing: true, lastError: null });
+      try {
+        const res = await createPreEntryApi(payload);
+        commitLocal({
+          ...state,
+          preAsientos: [res.preAsiento, ...state.preAsientos],
+          auditoria: [res.auditoria, ...state.auditoria].slice(0, 200),
+        });
+        setSyncStatus({ syncing: false, lastError: null });
+        return {
+          ok: true,
+          preAsiento: res.preAsiento,
+          detalle: `${res.preAsiento.documento.numero} radicada en Bandeja`,
+        };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'No se pudo radicar la factura.';
+        setSyncStatus({ syncing: false, lastError: msg });
+        return { ok: false, error: msg };
+      }
+    }
+
+    if (esPeriodoBloqueado(state, payload.period)) {
+      return {
+        ok: false,
+        error: `El periodo ${fmtPeriodo(payload.period)} está cerrado o aún no está abierto.`,
+      };
+    }
+    const id = `pre-xml-${Date.now()}`;
+    const doc = payload.document ?? {
+      clase: payload.entryType === 'DS' ? ('SOPORTE' as const) : ('FACTURA' as const),
+      numero: `FE-${Date.now().toString().slice(-4)}`,
+      emisor: DATOS.terceros.find((t) => t.id === payload.terceroId)?.nombre ?? 'Proveedor',
+      nit: DATOS.terceros.find((t) => t.id === payload.terceroId)?.documento ?? '',
+      fecha: payload.date,
+      items: [{ descripcion: payload.description, cantidad: 1, valorUnitario: valid.totalDebito }],
+      subtotal: valid.totalDebito,
+      iva: 0,
+      total: valid.totalDebito,
+      retenciones: [],
+    };
+    const nuevo: PreAsiento = {
+      id,
+      empresaId: payload.companyId,
+      periodo: payload.period,
+      tipo: payload.entryType,
+      fecha: payload.date,
+      agente: payload.agent ?? 'AGENTE_IA_DIAN',
+      confianza: payload.confianza ?? 96.5,
+      terceroId: payload.terceroId,
+      unidadId: payload.unidadId,
+      rubroId: payload.rubroId,
+      descripcion: payload.description,
+      documento: doc,
+      lineas: payload.lines,
+      estado: 'PENDIENTE',
+      notas: payload.notes ?? ['Factura radicada desde carga XML / manual'],
+    };
+    const ev = evento(
+      actorActual(),
+      'Radicó factura en Bandeja',
+      `${doc.numero} · ${payload.description}`,
+      payload.companyId,
+    );
+    commitLocal({
+      ...state,
+      preAsientos: [nuevo, ...state.preAsientos],
+      auditoria: [ev, ...state.auditoria].slice(0, 200),
+    });
+    return { ok: true, preAsiento: nuevo, detalle: `${doc.numero} radicada en Bandeja` };
   },
 
   async aprobarPreAsiento(id: string): Promise<Resultado> {

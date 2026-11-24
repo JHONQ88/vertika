@@ -330,6 +330,27 @@ impl Store {
             Store::Postgres(r) => r.list_audit(company_id).await,
         }
     }
+
+    pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {
+        match self {
+            Store::Memory(r) => r.pre_entry_company_id(pre_id).await,
+            Store::Postgres(r) => r.pre_entry_company_id(pre_id).await,
+        }
+    }
+
+    pub async fn entry_company_id(&self, entry_id: &str) -> Result<Option<String>, ApiError> {
+        match self {
+            Store::Memory(r) => r.entry_company_id(entry_id).await,
+            Store::Postgres(r) => r.entry_company_id(entry_id).await,
+        }
+    }
+
+    pub async fn all_company_ids(&self) -> Result<Vec<String>, ApiError> {
+        match self {
+            Store::Memory(r) => r.all_company_ids().await,
+            Store::Postgres(r) => r.all_company_ids().await,
+        }
+    }
 }
 
 pub fn normalize_requested_companies(requested: Option<&[String]>) -> Option<Vec<String>> {
