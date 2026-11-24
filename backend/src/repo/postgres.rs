@@ -1,22 +1,27 @@
-use crate::auth::{self, AuthUser, CompanyRole, CreateUserRequest, Role, DEMO_PASSWORD, DEMO_USERS};
+use crate::auth::{
+    self, AdminCompanyBrief, AdminContadorItem, AdminOverviewResponse, AuthUser, CompanyRole,
+    CreateContadorRequest, CreateUserRequest, Role, UpdateAdminUserRequest, DEMO_PASSWORD,
+    DEMO_USERS,
+};
 use crate::db::Db;
 use crate::domain::{
     demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
-    ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest, CreatePreEntryRequest,
-    CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante,
-    FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro,
-    FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult,
-    ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest,
-    VoidEntryResult,
+    ClosePeriodRequest, ClosePeriodResult, CreateCompanyRequest, CreateCompanyResult,
+    CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest,
+    FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea,
+    FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount,
+    OpenNextPeriodResult, PostEntryResult, ThirdParty, UpdateCompanySettingsRequest,
+    UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
     build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
-    compute_unit_overdue_balances, last_day_of_period, next_period_ym, normalize_frontend_lines,
-    normalize_requested_companies, origin_from_agent, parse_seed_bundle,
-    validate_and_hash_frontend_lines, validate_create_pre_entry_input,
+    compute_unit_overdue_balances, default_rubros_for_company, derive_sigla, last_day_of_period,
+    next_period_ym, normalize_frontend_lines, normalize_requested_companies, origin_from_agent,
+    parse_seed_bundle, slugify_company_name, validate_and_hash_frontend_lines,
+    validate_create_pre_entry_input,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use sqlx::{Postgres, Row, Transaction};
@@ -43,7 +48,66 @@ impl PostgresRepo {
         if seed_demo {
             repo.seed_relational_if_empty().await?;
         }
+        repo.ensure_super_admin_from_env().await?;
         Ok(repo)
+    }
+
+    async fn ensure_super_admin_from_env(&self) -> Result<(), ApiError> {
+        let email = std::env::var("SUPER_ADMIN_EMAIL")
+            .ok()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| s.contains('@'));
+        let password = std::env::var("SUPER_ADMIN_PASSWORD")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| s.len() >= 8);
+        let (Some(email), Some(password)) = (email, password) else {
+            return Ok(());
+        };
+        let nombre = std::env::var("SUPER_ADMIN_NAME")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Propietario Vértika".into());
+
+        let existing: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM usuarios WHERE LOWER(email) = LOWER($1)")
+                .bind(&email)
+                .fetch_optional(&self.db.pool)
+                .await?;
+
+        if let Some(uid) = existing {
+            sqlx::query(
+                "UPDATE usuarios
+                    SET is_super_admin = TRUE,
+                        activo = TRUE,
+                        max_copropiedades = GREATEST(max_copropiedades, 999),
+                        plan_nombre = 'OWNER',
+                        expires_at = NULL
+                  WHERE id = $1",
+            )
+            .bind(uid)
+            .execute(&self.db.pool)
+            .await?;
+        } else {
+            let uid = Uuid::new_v4();
+            let salt = format!("salt-{}", Uuid::new_v4().simple());
+            let pwd_hash = auth::hash_password(&password, &salt);
+            sqlx::query(
+                "INSERT INTO usuarios (
+                    id, email, nombre, password_hash, activo,
+                    is_super_admin, max_copropiedades, plan_nombre, expires_at
+                ) VALUES ($1, $2, $3, $4, TRUE, TRUE, 999, 'OWNER', NULL)",
+            )
+            .bind(uid)
+            .bind(&email)
+            .bind(&nombre)
+            .bind(pwd_hash)
+            .execute(&self.db.pool)
+            .await?;
+        }
+        tracing::info!("SUPER_ADMIN verificado desde entorno: {email}");
+        Ok(())
     }
 
     async fn seed_relational_if_empty(&self) -> Result<(), ApiError> {
@@ -2037,7 +2101,8 @@ impl PostgresRepo {
 
     pub async fn authenticate(&self, email: &str, password: &str) -> Result<AuthUser, ApiError> {
         let user_row = sqlx::query(
-            "SELECT id, email, nombre, password_hash, activo
+            "SELECT id, email, nombre, password_hash, activo,
+                    is_super_admin, max_copropiedades, plan_nombre, expires_at
                FROM usuarios
               WHERE LOWER(email) = LOWER($1)",
         )
@@ -2046,39 +2111,83 @@ impl PostgresRepo {
         .await?
         .ok_or_else(|| ApiError::Unauthorized("Credenciales inválidas.".into()))?;
 
-        let activo: bool = user_row.try_get("activo")?;
         let stored_hash: String = user_row.try_get("password_hash")?;
-        if !activo || !auth::verify_password(password, &stored_hash) {
+        if !auth::verify_password(password, &stored_hash) {
             return Err(ApiError::Unauthorized("Credenciales inválidas.".into()));
         }
 
-        let uid: Uuid = user_row.try_get("id")?;
-        let role_rows = sqlx::query(
-            "SELECT COALESCE(co.slug, co.id::text) AS slug, r.rol
-               FROM usuario_copropiedad_roles r
-               JOIN copropiedades co ON co.id = r.copropiedad_id
-              WHERE r.usuario_id = $1
-              ORDER BY slug",
-        )
-        .bind(uid)
-        .fetch_all(&self.db.pool)
-        .await?;
+        let activo: bool = user_row.try_get("activo")?;
+        if !activo {
+            return Err(ApiError::Forbidden(
+                "Cuenta suspendida. Contacta a Vértika.".into(),
+            ));
+        }
 
-        let mut roles = Vec::with_capacity(role_rows.len());
-        for rr in role_rows {
-            let slug: String = rr.try_get("slug")?;
-            let rol_str: String = rr.try_get("rol")?;
-            if let Some(role) = Role::from_str_code(&rol_str) {
-                roles.push(CompanyRole {
-                    company_id: slug,
-                    role,
-                });
+        let expires_at_dt: Option<DateTime<Utc>> = user_row.try_get("expires_at")?;
+        if let Some(exp) = expires_at_dt {
+            if exp < Utc::now() {
+                return Err(ApiError::Forbidden(
+                    "Tu periodo de prueba finalizó. Contacta a Vértika para activar tu plan."
+                        .into(),
+                ));
             }
         }
-        let primary_role = roles
-            .first()
-            .map(|r| r.role)
-            .unwrap_or(Role::Consejo);
+
+        let uid: Uuid = user_row.try_get("id")?;
+        let is_super_admin: bool = user_row.try_get("is_super_admin")?;
+        let max_copropiedades: i32 = user_row.try_get("max_copropiedades")?;
+        let plan_nombre: String = user_row.try_get("plan_nombre")?;
+
+        let roles = if is_super_admin {
+            let comp_rows = sqlx::query(
+                "SELECT COALESCE(slug, id::text) AS slug
+                   FROM copropiedades
+                  ORDER BY created_at, slug",
+            )
+            .fetch_all(&self.db.pool)
+            .await?;
+            comp_rows
+                .into_iter()
+                .filter_map(|r| r.try_get::<String, _>("slug").ok())
+                .map(|slug| CompanyRole {
+                    company_id: slug,
+                    role: Role::SuperAdmin,
+                })
+                .collect()
+        } else {
+            let role_rows = sqlx::query(
+                "SELECT COALESCE(co.slug, co.id::text) AS slug, r.rol
+                   FROM usuario_copropiedad_roles r
+                   JOIN copropiedades co ON co.id = r.copropiedad_id
+                  WHERE r.usuario_id = $1
+                  ORDER BY slug",
+            )
+            .bind(uid)
+            .fetch_all(&self.db.pool)
+            .await?;
+
+            let mut out = Vec::with_capacity(role_rows.len());
+            for rr in role_rows {
+                let slug: String = rr.try_get("slug")?;
+                let rol_str: String = rr.try_get("rol")?;
+                if let Some(role) = Role::from_str_code(&rol_str) {
+                    out.push(CompanyRole {
+                        company_id: slug,
+                        role,
+                    });
+                }
+            }
+            out
+        };
+
+        let primary_role = if is_super_admin {
+            Role::SuperAdmin
+        } else if roles.is_empty() && max_copropiedades >= 1 {
+            // Contador recién creado sin copropiedades aún (autoservicio)
+            Role::Contador
+        } else {
+            roles.first().map(|r| r.role).unwrap_or(Role::Consejo)
+        };
 
         Ok(AuthUser {
             id: uid.to_string(),
@@ -2086,6 +2195,10 @@ impl PostgresRepo {
             nombre: user_row.try_get("nombre")?,
             rol: primary_role,
             roles,
+            is_super_admin,
+            max_copropiedades,
+            plan_nombre,
+            expires_at: expires_at_dt.map(|dt| dt.to_rfc3339()),
         })
     }
 
@@ -2128,7 +2241,11 @@ impl PostgresRepo {
         Ok(())
     }
 
-    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+    pub async fn create_user(
+        &self,
+        req: CreateUserRequest,
+        created_by: Option<&str>,
+    ) -> Result<AuthUser, ApiError> {
         let email = req.email.trim().to_lowercase();
         let nombre = req.nombre.trim().to_string();
         let password = req.password.trim();
@@ -2160,14 +2277,18 @@ impl PostgresRepo {
         let uid = Uuid::new_v4();
         let salt = format!("salt-{}", Uuid::new_v4().simple());
         let pwd_hash = auth::hash_password(password, &salt);
+        let creator_uuid = created_by.and_then(|s| Uuid::parse_str(s).ok());
         sqlx::query(
-            "INSERT INTO usuarios (id, email, nombre, password_hash, activo)
-             VALUES ($1, $2, $3, $4, TRUE)",
+            "INSERT INTO usuarios (
+                id, email, nombre, password_hash, activo,
+                is_super_admin, max_copropiedades, plan_nombre, created_by
+            ) VALUES ($1, $2, $3, $4, TRUE, FALSE, 1, 'USUARIO', $5)",
         )
         .bind(uid)
         .bind(&email)
         .bind(&nombre)
         .bind(pwd_hash)
+        .bind(creator_uuid)
         .execute(&mut *tx)
         .await?;
 
@@ -2217,6 +2338,592 @@ impl PostgresRepo {
             nombre,
             rol: req.rol,
             roles,
+            is_super_admin: false,
+            max_copropiedades: 1,
+            plan_nombre: "USUARIO".into(),
+            expires_at: None,
+        })
+    }
+
+    pub async fn create_contador(
+        &self,
+        req: CreateContadorRequest,
+        created_by: &str,
+    ) -> Result<AuthUser, ApiError> {
+        let email = req.email.trim().to_lowercase();
+        let nombre = req.nombre.trim().to_string();
+        let password = req.password.trim();
+        if !email.contains('@') {
+            return Err(ApiError::unprocessable("Ingresa un correo electrónico válido."));
+        }
+        if nombre.is_empty() {
+            return Err(ApiError::unprocessable("El nombre del contador es obligatorio."));
+        }
+        if password.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+        let max_copropiedades = req.max_copropiedades.unwrap_or(1).clamp(1, 500);
+        let plan_nombre = req
+            .plan_nombre
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("PRUEBA")
+            .to_uppercase();
+        let expires_at = req
+            .dias_prueba
+            .filter(|&d| d > 0)
+            .map(|d| Utc::now() + Duration::days(i64::from(d)));
+
+        let mut tx = self.db.pool.begin().await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM usuarios WHERE LOWER(email) = LOWER($1))",
+        )
+        .bind(&email)
+        .fetch_one(&mut *tx)
+        .await?;
+        if exists {
+            return Err(ApiError::Conflict(
+                "Ya existe un usuario con ese correo.".into(),
+            ));
+        }
+
+        let uid = Uuid::new_v4();
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        let pwd_hash = auth::hash_password(password, &salt);
+        let creator_uuid = Uuid::parse_str(created_by).ok();
+
+        sqlx::query(
+            "INSERT INTO usuarios (
+                id, email, nombre, password_hash, activo,
+                is_super_admin, max_copropiedades, plan_nombre, expires_at, created_by
+            ) VALUES ($1, $2, $3, $4, TRUE, FALSE, $5, $6, $7, $8)",
+        )
+        .bind(uid)
+        .bind(&email)
+        .bind(&nombre)
+        .bind(pwd_hash)
+        .bind(max_copropiedades)
+        .bind(&plan_nombre)
+        .bind(expires_at)
+        .bind(creator_uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        let mut roles = Vec::new();
+        if let Some(scope) = normalize_requested_companies(req.company_ids.as_deref()) {
+            let comp_rows = sqlx::query(
+                "SELECT id, COALESCE(slug, id::text) AS slug FROM copropiedades ORDER BY created_at, slug",
+            )
+            .fetch_all(&mut *tx)
+            .await?;
+            for cr in comp_rows {
+                let cid: Uuid = cr.try_get("id")?;
+                let slug: String = cr.try_get("slug")?;
+                let cid_str = cid.to_string();
+                if !scope.iter().any(|s| s == &slug || s == &cid_str) {
+                    continue;
+                }
+                sqlx::query(
+                    "INSERT INTO usuario_copropiedad_roles (usuario_id, copropiedad_id, rol)
+                     VALUES ($1, $2, 'CONTADOR') ON CONFLICT DO NOTHING",
+                )
+                .bind(uid)
+                .bind(cid)
+                .execute(&mut *tx)
+                .await?;
+                roles.push(CompanyRole {
+                    company_id: slug,
+                    role: Role::Contador,
+                });
+            }
+        }
+        tx.commit().await?;
+
+        Ok(AuthUser {
+            id: uid.to_string(),
+            email,
+            nombre,
+            rol: Role::Contador,
+            roles,
+            is_super_admin: false,
+            max_copropiedades,
+            plan_nombre,
+            expires_at: expires_at.map(|dt| dt.to_rfc3339()),
+        })
+    }
+
+    async fn fetch_admin_contador_item(&self, uid: Uuid) -> Result<AdminContadorItem, ApiError> {
+        let row = sqlx::query(
+            "SELECT id, email, nombre, activo, plan_nombre, max_copropiedades, expires_at, created_at
+               FROM usuarios
+              WHERE id = $1",
+        )
+        .bind(uid)
+        .fetch_optional(&self.db.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Usuario no encontrado.".into()))?;
+
+        let comp_rows = sqlx::query(
+            "SELECT DISTINCT COALESCE(co.slug, co.id::text) AS slug,
+                             co.nit, co.nombre_corto, co.razon_social, co.periodo_actual
+               FROM copropiedades co
+               LEFT JOIN usuario_copropiedad_roles r
+                 ON r.copropiedad_id = co.id AND r.usuario_id = $1 AND r.rol = 'CONTADOR'
+              WHERE co.owner_user_id = $1 OR r.usuario_id IS NOT NULL
+              ORDER BY slug",
+        )
+        .bind(uid)
+        .fetch_all(&self.db.pool)
+        .await?;
+
+        let mut copropiedades = Vec::with_capacity(comp_rows.len());
+        for cr in comp_rows {
+            copropiedades.push(AdminCompanyBrief {
+                id: cr.try_get("slug")?,
+                nit: cr.try_get("nit")?,
+                nombre_corto: cr.try_get("nombre_corto")?,
+                razon_social: cr.try_get("razon_social")?,
+                periodo_actual: cr.try_get("periodo_actual")?,
+            });
+        }
+
+        let usuarios_creados: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM usuarios WHERE created_by = $1")
+                .bind(uid)
+                .fetch_one(&self.db.pool)
+                .await?;
+
+        let expires_at_dt: Option<DateTime<Utc>> = row.try_get("expires_at")?;
+        let created_at_dt: DateTime<Utc> = row.try_get("created_at")?;
+        let vencido = expires_at_dt.is_some_and(|dt| dt < Utc::now());
+
+        Ok(AdminContadorItem {
+            id: uid.to_string(),
+            email: row.try_get("email")?,
+            nombre: row.try_get("nombre")?,
+            activo: row.try_get("activo")?,
+            plan_nombre: row.try_get("plan_nombre")?,
+            max_copropiedades: row.try_get("max_copropiedades")?,
+            copropiedades_usadas: copropiedades.len(),
+            usuarios_creados: usuarios_creados.max(0) as usize,
+            expires_at: expires_at_dt.map(|dt| dt.to_rfc3339()),
+            vencido,
+            created_at: created_at_dt.to_rfc3339(),
+            copropiedades,
+        })
+    }
+
+    pub async fn admin_overview(&self) -> Result<AdminOverviewResponse, ApiError> {
+        let user_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT u.id
+               FROM usuarios u
+               LEFT JOIN usuario_copropiedad_roles r ON r.usuario_id = u.id
+              WHERE u.is_super_admin = FALSE
+                AND (r.rol = 'CONTADOR' OR u.plan_nombre <> 'USUARIO')
+              ORDER BY u.id",
+        )
+        .fetch_all(&self.db.pool)
+        .await?;
+
+        let mut contadores = Vec::with_capacity(user_ids.len());
+        for uid in user_ids {
+            contadores.push(self.fetch_admin_contador_item(uid).await?);
+        }
+        contadores.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        let total_copropiedades: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM copropiedades")
+                .fetch_one(&self.db.pool)
+                .await?;
+
+        let total_contadores = contadores.len();
+        let contadores_activos = contadores.iter().filter(|c| c.activo && !c.vencido).count();
+        let pruebas_activas = contadores
+            .iter()
+            .filter(|c| c.activo && !c.vencido && c.expires_at.is_some())
+            .count();
+        let cuentas_suspendidas_o_vencidas = contadores
+            .iter()
+            .filter(|c| !c.activo || c.vencido)
+            .count();
+
+        Ok(AdminOverviewResponse {
+            total_contadores,
+            contadores_activos,
+            total_copropiedades: total_copropiedades.max(0) as usize,
+            pruebas_activas,
+            cuentas_suspendidas_o_vencidas,
+            contadores,
+        })
+    }
+
+    pub async fn admin_update_user(
+        &self,
+        target_user_id: &str,
+        req: UpdateAdminUserRequest,
+    ) -> Result<AdminContadorItem, ApiError> {
+        let row = sqlx::query(
+            "SELECT id, is_super_admin, activo, max_copropiedades, plan_nombre, expires_at
+               FROM usuarios
+              WHERE id::text = $1 OR LOWER(email) = LOWER($1)",
+        )
+        .bind(target_user_id.trim())
+        .fetch_optional(&self.db.pool)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Usuario no encontrado.".into()))?;
+
+        let uid: Uuid = row.try_get("id")?;
+        let is_sa: bool = row.try_get("is_super_admin")?;
+        if is_sa {
+            return Err(ApiError::Forbidden(
+                "No se puede modificar una cuenta SUPER_ADMIN desde este endpoint.".into(),
+            ));
+        }
+
+        let next_activo: bool = req.activo.unwrap_or(row.try_get("activo")?);
+        let next_max: i32 = req
+            .max_copropiedades
+            .unwrap_or(row.try_get("max_copropiedades")?)
+            .clamp(1, 500);
+        let cur_plan: String = row.try_get("plan_nombre")?;
+        let next_plan = req
+            .plan_nombre
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_uppercase)
+            .unwrap_or(cur_plan);
+
+        let cur_exp: Option<DateTime<Utc>> = row.try_get("expires_at")?;
+        let next_exp = if let Some(days) = req.extend_days {
+            if days > 0 {
+                let base = cur_exp
+                    .filter(|dt| *dt > Utc::now())
+                    .unwrap_or_else(Utc::now);
+                Some(base + Duration::days(i64::from(days)))
+            } else {
+                cur_exp
+            }
+        } else if let Some(exp_raw) = req.expires_at {
+            let trimmed = exp_raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                let parsed = DateTime::parse_from_rfc3339(trimmed).map_err(|_| {
+                    ApiError::unprocessable("Fecha expiresAt inválida (usa formato ISO-8601).")
+                })?;
+                Some(parsed.with_timezone(&Utc))
+            }
+        } else {
+            cur_exp
+        };
+
+        sqlx::query(
+            "UPDATE usuarios
+                SET activo = $2,
+                    max_copropiedades = $3,
+                    plan_nombre = $4,
+                    expires_at = $5
+              WHERE id = $1",
+        )
+        .bind(uid)
+        .bind(next_activo)
+        .bind(next_max)
+        .bind(&next_plan)
+        .bind(next_exp)
+        .execute(&self.db.pool)
+        .await?;
+
+        self.fetch_admin_contador_item(uid).await
+    }
+
+    pub async fn create_company(
+        &self,
+        owner_user_id: &str,
+        is_super_admin: bool,
+        req: CreateCompanyRequest,
+        actor: &str,
+    ) -> Result<CreateCompanyResult, ApiError> {
+        let nit = req.nit.trim().to_string();
+        let razon_social = req.razon_social.trim().to_string();
+        let nombre_corto = req.nombre_corto.trim().to_string();
+        if nit.len() < 5 {
+            return Err(ApiError::unprocessable("Ingresa un NIT válido para la copropiedad."));
+        }
+        if razon_social.is_empty() || nombre_corto.is_empty() {
+            return Err(ApiError::unprocessable(
+                "La razón social y el nombre corto son obligatorios.",
+            ));
+        }
+
+        let owner_uuid = Uuid::parse_str(owner_user_id.trim())
+            .map_err(|_| ApiError::Unauthorized("Identificador de usuario inválido.".into()))?;
+
+        let mut tx = self.db.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(format!("company-quota:{owner_uuid}"))
+            .execute(&mut *tx)
+            .await?;
+
+        let user_row = sqlx::query(
+            "SELECT id, email, nombre, activo, is_super_admin, max_copropiedades, plan_nombre, expires_at
+               FROM usuarios
+              WHERE id = $1",
+        )
+        .bind(owner_uuid)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Usuario autenticado no encontrado.".into()))?;
+
+        let activo: bool = user_row.try_get("activo")?;
+        if !activo {
+            return Err(ApiError::Forbidden("Cuenta suspendida.".into()));
+        }
+        let max_copropiedades: i32 = user_row.try_get("max_copropiedades")?;
+        let plan_nombre: String = user_row.try_get("plan_nombre")?;
+        let expires_at_dt: Option<DateTime<Utc>> = user_row.try_get("expires_at")?;
+
+        if !is_super_admin {
+            let owned_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM copropiedades WHERE owner_user_id = $1",
+            )
+            .bind(owner_uuid)
+            .fetch_one(&mut *tx)
+            .await?;
+            if owned_count >= i64::from(max_copropiedades.max(1)) {
+                return Err(ApiError::Forbidden(format!(
+                    "Alcanzaste el límite de tu plan ({owned_count}/{} copropiedades). Contacta a Vértika para ampliar tu cupo.",
+                    max_copropiedades.max(1)
+                )));
+            }
+        }
+
+        let base_slug = slugify_company_name(&nombre_corto);
+        let mut slug = base_slug.clone();
+        let mut suffix = 2usize;
+        loop {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM copropiedades WHERE slug = $1)",
+            )
+            .bind(&slug)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !exists {
+                break;
+            }
+            slug = format!("{base_slug}-{suffix}");
+            suffix += 1;
+        }
+
+        let periodo = req
+            .periodo_actual
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| s.len() == 7 && s.as_bytes()[4] == b'-')
+            .map(str::to_string)
+            .unwrap_or_else(|| Utc::now().format("%Y-%m").to_string());
+        let presupuesto = req
+            .presupuesto_anual
+            .filter(|p| *p > Decimal::ZERO)
+            .unwrap_or_else(|| Decimal::from(120_000_000));
+        let fondo_pct = req
+            .fondo_imprevistos_pct
+            .filter(|v| *v >= Decimal::ONE)
+            .unwrap_or(Decimal::ONE);
+        let mora_pct = req
+            .tasa_mora_mensual
+            .filter(|v| *v >= Decimal::ZERO)
+            .unwrap_or_else(|| Decimal::new(15, 1));
+        let grupo_niif = req.grupo_niif.unwrap_or(3).clamp(2, 3);
+        let ciudad = req
+            .ciudad
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Bogotá D.C.")
+            .to_string();
+        let direccion = req
+            .direccion
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Por definir")
+            .to_string();
+        let sigla = derive_sigla(&nombre_corto);
+
+        let cid = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO copropiedades (
+                id, slug, nit, razon_social, nombre_corto, sigla, ciudad, direccion,
+                grupo_niif, porcentaje_fondo_imprevistos, tasa_mora_mensual,
+                dia_corte_pronto_pago, descuento_pronto_pago_pct, llave_bre_b,
+                presupuesto_anual, periodo_actual, saldos_iniciales, escala, color, owner_user_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,10,0,'',$12,$13,'{}'::jsonb,1,'#0F766E',$14)",
+        )
+        .bind(cid)
+        .bind(&slug)
+        .bind(&nit)
+        .bind(&razon_social)
+        .bind(&nombre_corto)
+        .bind(&sigla)
+        .bind(&ciudad)
+        .bind(&direccion)
+        .bind(grupo_niif)
+        .bind(fondo_pct)
+        .bind(mora_pct)
+        .bind(presupuesto)
+        .bind(&periodo)
+        .bind(owner_uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        for acc in demo_puc() {
+            sqlx::query(
+                "INSERT INTO puc_esal_cuentas (
+                    copropiedad_id, codigo_cuenta, nombre_cuenta, tipo_cuenta, naturaleza,
+                    rubro_presupuesto_key, requiere_tercero, requiere_unidad,
+                    es_efectivo, restringida, nota
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+            )
+            .bind(cid)
+            .bind(&acc.code)
+            .bind(&acc.name)
+            .bind(&acc.account_type)
+            .bind(&acc.nature)
+            .bind(&acc.rubric_key)
+            .bind(acc.requires_third_party)
+            .bind(acc.requires_unit)
+            .bind(acc.is_cash)
+            .bind(acc.restricted)
+            .bind(&acc.note)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for r in default_rubros_for_company(&slug, presupuesto) {
+            sqlx::query(
+                "INSERT INTO rubros_presupuestales (
+                    id, clave_externa, copropiedad_id, clave, nombre, cuenta_codigo, centro_costo, presupuesto_anual
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(&r.id)
+            .bind(cid)
+            .bind(&r.key)
+            .bind(&r.nombre)
+            .bind(&r.cuenta)
+            .bind(&r.centro)
+            .bind(r.presupuesto_anual)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        if !is_super_admin {
+            sqlx::query(
+                "INSERT INTO usuario_copropiedad_roles (usuario_id, copropiedad_id, rol)
+                 VALUES ($1, $2, 'CONTADOR') ON CONFLICT DO NOTHING",
+            )
+            .bind(owner_uuid)
+            .bind(cid)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let aud_id = format!("aud-{}", Uuid::new_v4().simple());
+        let aud_detalle = format!("Creó la copropiedad {razon_social} (NIT {nit})");
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO auditoria_eventos (id, clave_externa, copropiedad_id, ts, actor, accion, detalle)
+             VALUES ($1, $2, $3, $4, $5, 'CREAR_COPROPIEDAD', $6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(&aud_id)
+        .bind(cid)
+        .bind(now)
+        .bind(actor)
+        .bind(&aud_detalle)
+        .execute(&mut *tx)
+        .await?;
+
+        let roles = if is_super_admin {
+            let rows = sqlx::query("SELECT COALESCE(slug, id::text) AS slug FROM copropiedades ORDER BY created_at, slug")
+                .fetch_all(&mut *tx)
+                .await?;
+            rows.into_iter()
+                .filter_map(|r| r.try_get::<String, _>("slug").ok())
+                .map(|s| CompanyRole { company_id: s, role: Role::SuperAdmin })
+                .collect()
+        } else {
+            let rows = sqlx::query(
+                "SELECT COALESCE(co.slug, co.id::text) AS slug, r.rol
+                   FROM usuario_copropiedad_roles r
+                   JOIN copropiedades co ON co.id = r.copropiedad_id
+                  WHERE r.usuario_id = $1
+                  ORDER BY slug",
+            )
+            .bind(owner_uuid)
+            .fetch_all(&mut *tx)
+            .await?;
+            rows.into_iter()
+                .filter_map(|r| {
+                    let s = r.try_get::<String, _>("slug").ok()?;
+                    let role = Role::from_str_code(&r.try_get::<String, _>("rol").ok()?)?;
+                    Some(CompanyRole { company_id: s, role })
+                })
+                .collect()
+        };
+
+        tx.commit().await?;
+
+        let updated_user = AuthUser {
+            id: owner_uuid.to_string(),
+            email: user_row.try_get("email")?,
+            nombre: user_row.try_get("nombre")?,
+            rol: if is_super_admin { Role::SuperAdmin } else { Role::Contador },
+            roles,
+            is_super_admin,
+            max_copropiedades,
+            plan_nombre,
+            expires_at: expires_at_dt.map(|dt| dt.to_rfc3339()),
+        };
+        let token = auth::issue_token(&updated_user)?;
+
+        let copropiedad = FrontendCopropiedad {
+            id: slug.clone(),
+            nit,
+            razon_social,
+            nombre_corto,
+            sigla,
+            ciudad,
+            direccion,
+            grupo_niif,
+            fondo_imprevistos_pct: fondo_pct,
+            tasa_mora_mensual: mora_pct,
+            dia_corte_pronto_pago: 10,
+            descuento_pronto_pago_pct: Decimal::ZERO,
+            llave_bre_b: String::new(),
+            presupuesto_anual: presupuesto,
+            periodo_actual: periodo,
+            saldos_iniciales: HashMap::new(),
+            escala: Decimal::ONE,
+            color: "#0F766E".into(),
+        };
+
+        Ok(CreateCompanyResult {
+            copropiedad,
+            auditoria: FrontendAuditoria {
+                id: aud_id,
+                ts: now.to_rfc3339(),
+                actor: actor.into(),
+                accion: "CREAR_COPROPIEDAD".into(),
+                detalle: aud_detalle,
+                empresa_id: slug,
+            },
+            user: updated_user,
+            token,
         })
     }
 

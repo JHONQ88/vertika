@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { apiEnabled, type UserRole } from '../api';
+import { apiEnabled, DEMO_MODE_ENABLED, type UserRole } from '../api';
 import { acciones, DATOS, DEMO_PERFILES, useAuth } from '../store';
 import type { ToastData } from '../ui-types';
 import { Badge, Btn, Modal } from './ui';
 
-const ROLES_DISPONIBLES: Array<{ value: UserRole; label: string }> = [
-  { value: 'CONTADOR', label: 'CONTADOR (Contabilidad + maestros)' },
+const ROLES_EQUIPO: Array<{ value: UserRole; label: string }> = [
   { value: 'ADMINISTRADOR', label: 'ADMINISTRADOR (Causación + maestros)' },
   { value: 'REVISOR_FISCAL', label: 'REVISOR_FISCAL (Auditoría solo lectura)' },
   { value: 'CONSEJO', label: 'CONSEJO (Consulta solo lectura)' },
@@ -35,7 +34,12 @@ export function AuthModal({
   const [nuevoRol, setNuevoRol] = useState<UserRole>('ADMINISTRADOR');
   const [alcanceEmpresa, setAlcanceEmpresa] = useState<string>('ALL');
 
-  const puedeCrearUsuarios = user.rol === 'CONTADOR' || user.rol === 'ADMINISTRADOR';
+  const esSuperAdmin = user.rol === 'SUPER_ADMIN' || user.isSuperAdmin;
+  const puedeCrearUsuarios =
+    esSuperAdmin || user.rol === 'CONTADOR' || user.rol === 'ADMINISTRADOR';
+  const rolesPermitidos = esSuperAdmin
+    ? [{ value: 'CONTADOR' as UserRole, label: 'CONTADOR (Contabilidad + maestros)' }, ...ROLES_EQUIPO]
+    : ROLES_EQUIPO;
 
   const loginManual = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,31 +142,35 @@ export function AuthModal({
         </div>
       </div>
 
-      <h3 style={{ margin: '0 0 8px', fontSize: 13 }}>Perfiles rápidos (clave demo: vertika2026)</h3>
-      <div className="empresas" style={{ marginBottom: 16 }}>
-        {DEMO_PERFILES.map((p) => {
-          const activo = user.rol === p.rol;
-          return (
-            <button
-              key={p.rol}
-              type="button"
-              className={`empresa-card ${activo ? 'is-active' : ''}`}
-              disabled={cargando}
-              onClick={() => void cambiarPerfil(p.rol)}
-            >
-              <span className="empresa-info">
-                <strong>
-                  {p.nombre} · {p.etiqueta}
-                </strong>
-                <small>{p.descripcion}</small>
-              </span>
-              <span className="empresa-meta">
-                <Badge tone={activo ? 'ok' : 'neutral'}>{p.rol}</Badge>
-              </span>
-            </button>
-          );
-        })}
-      </div>
+      {DEMO_MODE_ENABLED && (
+        <>
+          <h3 style={{ margin: '0 0 8px', fontSize: 13 }}>Perfiles rápidos (entorno demo)</h3>
+          <div className="empresas" style={{ marginBottom: 16 }}>
+            {DEMO_PERFILES.map((p) => {
+              const activo = user.rol === p.rol;
+              return (
+                <button
+                  key={p.rol}
+                  type="button"
+                  className={`empresa-card ${activo ? 'is-active' : ''}`}
+                  disabled={cargando}
+                  onClick={() => void cambiarPerfil(p.rol)}
+                >
+                  <span className="empresa-info">
+                    <strong>
+                      {p.nombre} · {p.etiqueta}
+                    </strong>
+                    <small>{p.descripcion}</small>
+                  </span>
+                  <span className="empresa-meta">
+                    <Badge tone={activo ? 'ok' : 'neutral'}>{p.rol}</Badge>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <form onSubmit={(e) => void loginManual(e)}>
         <h3 style={{ margin: '0 0 8px', fontSize: 13 }}>Iniciar sesión con correo y contraseña</h3>
@@ -317,7 +325,7 @@ export function AuthModal({
                 onChange={(e) => setNuevoRol(e.target.value as UserRole)}
                 style={{ width: '100%', marginTop: 4 }}
               >
-                {ROLES_DISPONIBLES.map((r) => (
+                {rolesPermitidos.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
                   </option>

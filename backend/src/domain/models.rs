@@ -474,3 +474,36 @@ pub struct UpdateCompanySettingsRequest {
     #[serde(rename = "llaveBreB", alias = "llave_bre_b", default)]
     pub llave_bre_b: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCompanyRequest {
+    pub nit: String,
+    #[serde(alias = "razon_social")]
+    pub razon_social: String,
+    #[serde(alias = "nombre_corto")]
+    pub nombre_corto: String,
+    #[serde(default)]
+    pub ciudad: Option<String>,
+    #[serde(default)]
+    pub direccion: Option<String>,
+    #[serde(default, alias = "grupo_niif")]
+    pub grupo_niif: Option<i16>,
+    #[serde(default, alias = "periodo_actual")]
+    pub periodo_actual: Option<String>,
+    #[serde(default, alias = "presupuesto_anual")]
+    pub presupuesto_anual: Option<Decimal>,
+    #[serde(default, alias = "fondo_imprevistos_pct")]
+    pub fondo_imprevistos_pct: Option<Decimal>,
+    #[serde(default, alias = "tasa_mora_mensual")]
+    pub tasa_mora_mensual: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCompanyResult {
+    pub copropiedad: FrontendCopropiedad,
+    pub auditoria: FrontendAuditoria,
+    pub user: crate::auth::AuthUser,
+    pub token: String,
+}

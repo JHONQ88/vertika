@@ -1,22 +1,26 @@
-use crate::auth::{self, AuthUser, CompanyRole, CreateUserRequest, DEMO_PASSWORD, DEMO_USERS};
+use crate::auth::{
+    self, AdminCompanyBrief, AdminContadorItem, AdminOverviewResponse, AuthUser, CompanyRole,
+    CreateContadorRequest, CreateUserRequest, Role, UpdateAdminUserRequest, DEMO_PASSWORD,
+    DEMO_SUPER_ADMIN, DEMO_USERS,
+};
 use crate::domain::{
     demo_puc, ledger, third_parties_from_seed, ApproveResult, BalanceRequest, BillPeriodRequest,
-    BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateEntryRequest,
-    CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
-    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
-    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
-    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
-    UpsertUnitRequest, VoidEntryResult,
+    BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult, CreateCompanyRequest,
+    CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
+    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
+    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
+    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty,
+    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
     build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
     compute_cartera_total, compute_traslado_fondo, compute_unit_overdue_balances,
-    last_day_of_period, next_period_ym, normalize_frontend_lines, normalize_requested_companies,
-    origin_from_agent, parse_seed_bundle, validate_and_hash_frontend_lines,
-    validate_create_pre_entry_input,
+    default_rubros_for_company, derive_sigla, last_day_of_period, next_period_ym,
+    normalize_frontend_lines, normalize_requested_companies, origin_from_agent, parse_seed_bundle,
+    slugify_company_name, validate_and_hash_frontend_lines, validate_create_pre_entry_input,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -26,6 +30,9 @@ use uuid::Uuid;
 struct StoredUser {
     user: AuthUser,
     password_hash: String,
+    activo: bool,
+    created_by: Option<String>,
+    created_at: String,
 }
 
 struct MemoryData {
@@ -35,6 +42,7 @@ struct MemoryData {
     puc: Vec<LedgerAccount>,
     third_parties: Vec<ThirdParty>,
     users: Vec<StoredUser>,
+    company_owners: HashMap<String, String>,
     legacy_override: Option<Value>,
 }
 
@@ -60,7 +68,8 @@ impl MemoryRepo {
             .map(|p| (p.id.clone(), p.estado.clone()))
             .collect();
         let company_ids: Vec<String> = datos.companies.iter().map(|c| c.id.clone()).collect();
-        let users = DEMO_USERS
+        let now_iso = Utc::now().to_rfc3339();
+        let mut users: Vec<StoredUser> = DEMO_USERS
             .iter()
             .map(|u| StoredUser {
                 user: AuthUser {
@@ -75,9 +84,49 @@ impl MemoryRepo {
                             role: u.rol,
                         })
                         .collect(),
+                    is_super_admin: false,
+                    max_copropiedades: if u.rol == Role::Contador { 5 } else { 1 },
+                    plan_nombre: "DEMO".into(),
+                    expires_at: None,
                 },
                 password_hash: auth::hash_password(DEMO_PASSWORD, u.salt),
+                activo: true,
+                created_by: if u.rol == Role::Contador {
+                    Some(DEMO_SUPER_ADMIN.id.into())
+                } else {
+                    Some("usr-contador".into())
+                },
+                created_at: now_iso.clone(),
             })
+            .collect();
+
+        users.push(StoredUser {
+            user: AuthUser {
+                id: DEMO_SUPER_ADMIN.id.into(),
+                email: DEMO_SUPER_ADMIN.email.into(),
+                nombre: DEMO_SUPER_ADMIN.nombre.into(),
+                rol: Role::SuperAdmin,
+                roles: company_ids
+                    .iter()
+                    .map(|cid| CompanyRole {
+                        company_id: cid.clone(),
+                        role: Role::SuperAdmin,
+                    })
+                    .collect(),
+                is_super_admin: true,
+                max_copropiedades: 999,
+                plan_nombre: "OWNER".into(),
+                expires_at: None,
+            },
+            password_hash: auth::hash_password(DEMO_PASSWORD, DEMO_SUPER_ADMIN.salt),
+            activo: true,
+            created_by: None,
+            created_at: now_iso,
+        });
+
+        let company_owners = company_ids
+            .iter()
+            .map(|cid| (cid.clone(), "usr-contador".to_string()))
             .collect();
 
         Ok(MemoryData {
@@ -87,6 +136,7 @@ impl MemoryRepo {
             puc: demo_puc(),
             third_parties: third_parties_from_seed(seed),
             users,
+            company_owners,
             legacy_override: None,
         })
     }
@@ -101,6 +151,16 @@ impl MemoryRepo {
             .ok_or_else(|| ApiError::Unauthorized("Credenciales inválidas.".into()))?;
         if !auth::verify_password(password, &found.password_hash) {
             return Err(ApiError::Unauthorized("Credenciales inválidas.".into()));
+        }
+        if !found.activo {
+            return Err(ApiError::Forbidden(
+                "Cuenta suspendida. Contacta a Vértika.".into(),
+            ));
+        }
+        if auth::is_expired_iso(found.user.expires_at.as_deref()) {
+            return Err(ApiError::Forbidden(
+                "Tu periodo de prueba finalizó. Contacta a Vértika para activar tu plan.".into(),
+            ));
         }
         Ok(found.user.clone())
     }
@@ -131,7 +191,11 @@ impl MemoryRepo {
         Ok(())
     }
 
-    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+    pub async fn create_user(
+        &self,
+        req: CreateUserRequest,
+        created_by: Option<&str>,
+    ) -> Result<AuthUser, ApiError> {
         let email = req.email.trim().to_lowercase();
         let nombre = req.nombre.trim().to_string();
         let password = req.password.trim();
@@ -182,13 +246,390 @@ impl MemoryRepo {
             nombre,
             rol: req.rol,
             roles,
+            is_super_admin: false,
+            max_copropiedades: 1,
+            plan_nombre: "USUARIO".into(),
+            expires_at: None,
         };
         let salt = format!("salt-{}", Uuid::new_v4().simple());
         g.users.push(StoredUser {
             user: user.clone(),
             password_hash: auth::hash_password(password, &salt),
+            activo: true,
+            created_by: created_by.map(str::to_string),
+            created_at: Utc::now().to_rfc3339(),
         });
         Ok(user)
+    }
+
+    pub async fn create_contador(
+        &self,
+        req: CreateContadorRequest,
+        created_by: &str,
+    ) -> Result<AuthUser, ApiError> {
+        let email = req.email.trim().to_lowercase();
+        let nombre = req.nombre.trim().to_string();
+        let password = req.password.trim();
+        if !email.contains('@') {
+            return Err(ApiError::unprocessable("Ingresa un correo electrónico válido."));
+        }
+        if nombre.is_empty() {
+            return Err(ApiError::unprocessable("El nombre del contador es obligatorio."));
+        }
+        if password.len() < 8 {
+            return Err(ApiError::unprocessable(
+                "La contraseña debe tener al menos 8 caracteres.",
+            ));
+        }
+        let max_copropiedades = req.max_copropiedades.unwrap_or(1).clamp(1, 500);
+        let plan_nombre = req
+            .plan_nombre
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("PRUEBA")
+            .to_uppercase();
+        let expires_at = req
+            .dias_prueba
+            .filter(|&d| d > 0)
+            .map(|d| (Utc::now() + Duration::days(i64::from(d))).to_rfc3339());
+
+        let mut g = self.inner.write().await;
+        if g.users
+            .iter()
+            .any(|u| u.user.email.eq_ignore_ascii_case(&email))
+        {
+            return Err(ApiError::Conflict(
+                "Ya existe un usuario con ese correo.".into(),
+            ));
+        }
+
+        let requested = normalize_requested_companies(req.company_ids.as_deref());
+        let roles: Vec<CompanyRole> = match requested {
+            Some(scope) => g
+                .datos
+                .companies
+                .iter()
+                .filter(|c| scope.iter().any(|s| s == &c.id))
+                .map(|c| CompanyRole {
+                    company_id: c.id.clone(),
+                    role: Role::Contador,
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+
+        let user = AuthUser {
+            id: format!("usr-{}", Uuid::new_v4().simple()),
+            email,
+            nombre,
+            rol: Role::Contador,
+            roles,
+            is_super_admin: false,
+            max_copropiedades,
+            plan_nombre,
+            expires_at,
+        };
+        let salt = format!("salt-{}", Uuid::new_v4().simple());
+        g.users.push(StoredUser {
+            user: user.clone(),
+            password_hash: auth::hash_password(password, &salt),
+            activo: true,
+            created_by: Some(created_by.to_string()),
+            created_at: Utc::now().to_rfc3339(),
+        });
+        Ok(user)
+    }
+
+    fn build_admin_item(g: &MemoryData, su: &StoredUser) -> AdminContadorItem {
+        let mut owned: Vec<AdminCompanyBrief> = g
+            .datos
+            .companies
+            .iter()
+            .filter(|c| {
+                g.company_owners
+                    .get(&c.id)
+                    .is_some_and(|owner| owner == &su.user.id)
+            })
+            .map(|c| AdminCompanyBrief {
+                id: c.id.clone(),
+                nit: c.nit.clone(),
+                nombre_corto: c.nombre_corto.clone(),
+                razon_social: c.razon_social.clone(),
+                periodo_actual: c.periodo_actual.clone(),
+            })
+            .collect();
+        if owned.is_empty() && !su.user.roles.is_empty() {
+            owned = g
+                .datos
+                .companies
+                .iter()
+                .filter(|c| {
+                    su.user
+                        .roles
+                        .iter()
+                        .any(|r| r.company_id == c.id && r.role == Role::Contador)
+                })
+                .map(|c| AdminCompanyBrief {
+                    id: c.id.clone(),
+                    nit: c.nit.clone(),
+                    nombre_corto: c.nombre_corto.clone(),
+                    razon_social: c.razon_social.clone(),
+                    periodo_actual: c.periodo_actual.clone(),
+                })
+                .collect();
+        }
+        let usuarios_creados = g
+            .users
+            .iter()
+            .filter(|other| other.created_by.as_deref() == Some(su.user.id.as_str()))
+            .count();
+        let vencido = auth::is_expired_iso(su.user.expires_at.as_deref());
+        AdminContadorItem {
+            id: su.user.id.clone(),
+            email: su.user.email.clone(),
+            nombre: su.user.nombre.clone(),
+            activo: su.activo,
+            plan_nombre: su.user.plan_nombre.clone(),
+            max_copropiedades: su.user.max_copropiedades,
+            copropiedades_usadas: owned.len(),
+            usuarios_creados,
+            expires_at: su.user.expires_at.clone(),
+            vencido,
+            created_at: su.created_at.clone(),
+            copropiedades: owned,
+        }
+    }
+
+    pub async fn admin_overview(&self) -> Result<AdminOverviewResponse, ApiError> {
+        let g = self.inner.read().await;
+        let contadores: Vec<AdminContadorItem> = g
+            .users
+            .iter()
+            .filter(|u| !u.user.is_super_admin && u.user.rol == Role::Contador)
+            .map(|u| Self::build_admin_item(&g, u))
+            .collect();
+
+        let total_contadores = contadores.len();
+        let contadores_activos = contadores.iter().filter(|c| c.activo && !c.vencido).count();
+        let pruebas_activas = contadores
+            .iter()
+            .filter(|c| c.activo && !c.vencido && c.expires_at.is_some())
+            .count();
+        let cuentas_suspendidas_o_vencidas = contadores
+            .iter()
+            .filter(|c| !c.activo || c.vencido)
+            .count();
+
+        Ok(AdminOverviewResponse {
+            total_contadores,
+            contadores_activos,
+            total_copropiedades: g.datos.companies.len(),
+            pruebas_activas,
+            cuentas_suspendidas_o_vencidas,
+            contadores,
+        })
+    }
+
+    pub async fn admin_update_user(
+        &self,
+        target_user_id: &str,
+        req: UpdateAdminUserRequest,
+    ) -> Result<AdminContadorItem, ApiError> {
+        let mut g = self.inner.write().await;
+        let idx = g
+            .users
+            .iter()
+            .position(|u| u.user.id == target_user_id || u.user.email.eq_ignore_ascii_case(target_user_id))
+            .ok_or_else(|| ApiError::NotFound("Usuario no encontrado.".into()))?;
+        if g.users[idx].user.is_super_admin {
+            return Err(ApiError::Forbidden(
+                "No se puede modificar una cuenta SUPER_ADMIN desde este endpoint.".into(),
+            ));
+        }
+
+        if let Some(activo) = req.activo {
+            g.users[idx].activo = activo;
+        }
+        if let Some(max_c) = req.max_copropiedades {
+            g.users[idx].user.max_copropiedades = max_c.clamp(1, 500);
+        }
+        if let Some(plan) = req.plan_nombre {
+            let clean = plan.trim();
+            if !clean.is_empty() {
+                g.users[idx].user.plan_nombre = clean.to_uppercase();
+            }
+        }
+        if let Some(days) = req.extend_days {
+            if days > 0 {
+                let base = g.users[idx]
+                    .user
+                    .expires_at
+                    .as_deref()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .filter(|dt| *dt > Utc::now())
+                    .unwrap_or_else(Utc::now);
+                g.users[idx].user.expires_at = Some((base + Duration::days(i64::from(days))).to_rfc3339());
+            }
+        } else if let Some(exp_raw) = req.expires_at {
+            let trimmed = exp_raw.trim();
+            if trimmed.is_empty() {
+                g.users[idx].user.expires_at = None;
+            } else {
+                let parsed = chrono::DateTime::parse_from_rfc3339(trimmed)
+                    .map_err(|_| ApiError::unprocessable("Fecha expiresAt inválida (usa formato ISO-8601)."))?;
+                g.users[idx].user.expires_at = Some(parsed.with_timezone(&Utc).to_rfc3339());
+            }
+        }
+
+        let item = Self::build_admin_item(&g, &g.users[idx]);
+        Ok(item)
+    }
+
+    pub async fn create_company(
+        &self,
+        owner_user_id: &str,
+        is_super_admin: bool,
+        req: CreateCompanyRequest,
+        actor: &str,
+    ) -> Result<CreateCompanyResult, ApiError> {
+        let nit = req.nit.trim().to_string();
+        let razon_social = req.razon_social.trim().to_string();
+        let nombre_corto = req.nombre_corto.trim().to_string();
+        if nit.len() < 5 {
+            return Err(ApiError::unprocessable("Ingresa un NIT válido para la copropiedad."));
+        }
+        if razon_social.is_empty() || nombre_corto.is_empty() {
+            return Err(ApiError::unprocessable(
+                "La razón social y el nombre corto son obligatorios.",
+            ));
+        }
+
+        let mut g = self.inner.write().await;
+        let user_idx = g
+            .users
+            .iter()
+            .position(|u| u.user.id == owner_user_id)
+            .ok_or_else(|| ApiError::NotFound("Usuario autenticado no encontrado.".into()))?;
+
+        if !is_super_admin {
+            let max_allowed = g.users[user_idx].user.max_copropiedades.max(1) as usize;
+            let owned_count = g
+                .company_owners
+                .values()
+                .filter(|owner| owner.as_str() == owner_user_id)
+                .count();
+            if owned_count >= max_allowed {
+                return Err(ApiError::Forbidden(format!(
+                    "Alcanzaste el límite de tu plan ({owned_count}/{max_allowed} copropiedades). Contacta a Vértika para ampliar tu cupo."
+                )));
+            }
+        }
+
+        let base_slug = slugify_company_name(&nombre_corto);
+        let mut slug = base_slug.clone();
+        let mut suffix = 2usize;
+        while g.datos.companies.iter().any(|c| c.id == slug) {
+            slug = format!("{base_slug}-{suffix}");
+            suffix += 1;
+        }
+
+        let periodo = req
+            .periodo_actual
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| s.len() == 7 && s.as_bytes()[4] == b'-')
+            .map(str::to_string)
+            .unwrap_or_else(|| Utc::now().format("%Y-%m").to_string());
+        let presupuesto = req
+            .presupuesto_anual
+            .filter(|p| *p > Decimal::ZERO)
+            .unwrap_or_else(|| Decimal::from(120_000_000));
+        let fondo_pct = req
+            .fondo_imprevistos_pct
+            .filter(|v| *v >= Decimal::ONE)
+            .unwrap_or(Decimal::ONE);
+        let mora_pct = req
+            .tasa_mora_mensual
+            .filter(|v| *v >= Decimal::ZERO)
+            .unwrap_or_else(|| Decimal::new(15, 1));
+
+        let copropiedad = FrontendCopropiedad {
+            id: slug.clone(),
+            nit: nit.clone(),
+            razon_social: razon_social.clone(),
+            nombre_corto: nombre_corto.clone(),
+            sigla: derive_sigla(&nombre_corto),
+            ciudad: req
+                .ciudad
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Bogotá D.C.")
+                .into(),
+            direccion: req
+                .direccion
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Por definir")
+                .into(),
+            grupo_niif: req.grupo_niif.unwrap_or(3).clamp(2, 3),
+            fondo_imprevistos_pct: fondo_pct,
+            tasa_mora_mensual: mora_pct,
+            dia_corte_pronto_pago: 10,
+            descuento_pronto_pago_pct: Decimal::ZERO,
+            llave_bre_b: String::new(),
+            presupuesto_anual: presupuesto,
+            periodo_actual: periodo,
+            saldos_iniciales: HashMap::new(),
+            escala: Decimal::ONE,
+            color: "#0F766E".into(),
+        };
+
+        g.datos.companies.push(copropiedad.clone());
+        g.datos
+            .rubros
+            .extend(default_rubros_for_company(&slug, presupuesto));
+        g.company_owners
+            .insert(slug.clone(), owner_user_id.to_string());
+
+        let role_for_owner = if is_super_admin {
+            Role::SuperAdmin
+        } else {
+            Role::Contador
+        };
+        if !g.users[user_idx]
+            .user
+            .roles
+            .iter()
+            .any(|r| r.company_id == slug)
+        {
+            g.users[user_idx].user.roles.push(CompanyRole {
+                company_id: slug.clone(),
+                role: role_for_owner,
+            });
+        }
+        let updated_user = g.users[user_idx].user.clone();
+
+        let auditoria = FrontendAuditoria {
+            id: format!("aud-{}", Uuid::new_v4().simple()),
+            ts: Utc::now().to_rfc3339(),
+            actor: actor.into(),
+            accion: "CREAR_COPROPIEDAD".into(),
+            detalle: format!("Creó la copropiedad {razon_social} (NIT {nit})"),
+            empresa_id: slug,
+        };
+        g.estado.auditoria.insert(0, auditoria.clone());
+
+        let token = auth::issue_token(&updated_user)?;
+        Ok(CreateCompanyResult {
+            copropiedad,
+            auditoria,
+            user: updated_user,
+            token,
+        })
     }
 
     fn find_company<'a>(

@@ -24,6 +24,7 @@ import {
   billPeriodApi,
   changePasswordApi,
   closePeriodApi,
+  createCompanyApi,
   createEntryApi,
   createPreEntryApi,
   createPucAccountApi,
@@ -46,6 +47,7 @@ import {
   voidEntryApi,
   type AuthUser,
   type BackendLedgerAccount,
+  type CreateCompanyPayload,
   type CreateEntryPayload,
   type CreatePreEntryPayload,
   type CreatePucPayload,
@@ -103,6 +105,7 @@ export const DEMO_PERFILES: Array<{
 ];
 
 export function tienePermiso(rol: UserRole | undefined, permiso: Permiso): boolean {
+  if (rol === 'SUPER_ADMIN') return true;
   if (permiso === 'lectura') return true;
   if (permiso === 'contabilidad') return rol === 'CONTADOR';
   return rol === 'CONTADOR' || rol === 'ADMINISTRADOR';
@@ -516,6 +519,39 @@ export const acciones = {
       return { ok: true, detalle: `${res.user.nombre} (${res.user.rol})` };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'No se pudo crear el usuario.';
+      setSyncStatus({ syncing: false, lastError: msg });
+      return { ok: false, error: msg };
+    }
+  },
+
+  async crearCopropiedad(payload: CreateCompanyPayload): Promise<Resultado> {
+    if (!apiEnabled) {
+      return {
+        ok: false,
+        error: 'Crear copropiedades requiere conectar la consola al backend Rust (VITE_API_URL).',
+      };
+    }
+    if (!tienePermiso(authSession.user.rol, 'contabilidad')) {
+      return {
+        ok: false,
+        error: 'Solo un Contador o Super Admin puede crear nuevas copropiedades.',
+      };
+    }
+    setSyncStatus({ syncing: true, lastError: null });
+    try {
+      const res = await createCompanyApi(payload);
+      setAuthSession(res.user, res.token);
+      await acciones.sincronizar();
+      const creada = DATOS.companies.find((c) => c.id === res.copropiedad.id) ?? res.copropiedad;
+      commitLocal({
+        ...state,
+        activeCompanyId: creada.id,
+        periodo: creada.periodoActual,
+      });
+      setSyncStatus({ syncing: false, lastError: null });
+      return { ok: true, detalle: `${creada.nombreCorto} (${creada.nit})` };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'No se pudo crear la copropiedad.';
       setSyncStatus({ syncing: false, lastError: msg });
       return { ok: false, error: msg };
     }

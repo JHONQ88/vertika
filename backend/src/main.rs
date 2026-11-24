@@ -4,7 +4,10 @@ mod domain;
 mod error;
 mod repo;
 
-use auth::{ChangePasswordRequest, CreateUserRequest, LoginRequest, LoginResponse, Role};
+use auth::{
+    ChangePasswordRequest, CreateContadorRequest, CreateUserRequest, LoginRequest, LoginResponse,
+    Role, UpdateAdminUserRequest,
+};
 use axum::{
     extract::{Path, Query, Request as AxumRequest, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
@@ -16,8 +19,8 @@ use axum::{
 use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
-    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CreateEntryRequest,
-    CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
+    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CreateCompanyRequest,
+    CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
     UpdateCompanySettingsRequest, UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest,
     UpsertThirdPartyRequest, UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
@@ -150,6 +153,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/me", get(auth_me))
         .route("/api/v1/auth/change-password", post(auth_change_password))
         .route("/api/v1/auth/users", post(auth_create_user))
+        .route("/api/v1/companies", post(create_company))
+        .route("/api/v1/admin/overview", get(admin_overview))
+        .route("/api/v1/admin/contadores", post(admin_create_contador))
+        .route("/api/v1/admin/users/:id", patch(admin_update_user))
         .route("/api/v1/bootstrap", get(bootstrap))
         .route("/api/v1/state", get(get_state).put(put_state))
         .route("/api/v1/reset", post(reset_state))
@@ -344,11 +351,16 @@ async fn auth_create_user(
     Json(mut req): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
-    let required_roles: &[Role] = if req.rol == Role::Contador {
-        &[Role::Contador]
-    } else {
-        &[Role::Contador, Role::Administrador]
-    };
+    if req.rol == Role::SuperAdmin {
+        return Err(ApiError::Forbidden(
+            "No se pueden crear cuentas SUPER_ADMIN desde la API.".into(),
+        ));
+    }
+    if req.rol == Role::Contador {
+        ctx.require_super_admin()?;
+    }
+
+    let required_roles: &[Role] = &[Role::Contador, Role::Administrador];
     ctx.require_any_role(required_roles)?;
 
     let requested: Vec<String> = req
@@ -360,24 +372,77 @@ async fn auth_create_user(
         .filter(|s| !s.is_empty())
         .collect();
 
-    let scoped_companies = if requested.is_empty() {
+    let scoped_companies = if ctx.is_super_admin() {
+        if requested.is_empty() {
+            None
+        } else {
+            Some(requested)
+        }
+    } else if requested.is_empty() {
         let managed = ctx.managed_company_ids(required_roles);
         if managed.is_empty() {
             return Err(ApiError::Forbidden(
                 "No tienes copropiedades autorizadas para crear este tipo de usuario.".into(),
             ));
         }
-        managed
+        Some(managed)
     } else {
         for cid in &requested {
             ctx.require_company_roles(cid, required_roles)?;
         }
-        requested
+        Some(requested)
     };
-    req.company_ids = Some(scoped_companies);
+    req.company_ids = scoped_companies;
 
-    let user = state.store.create_user(req).await?;
+    let user = state.store.create_user(req, Some(&ctx.user.id)).await?;
     Ok((StatusCode::CREATED, Json(json!({ "user": user }))))
+}
+
+async fn create_company(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateCompanyRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_any_role(&[Role::Contador])?;
+    let res = state
+        .store
+        .create_company(&ctx.user.id, ctx.is_super_admin(), req, &ctx.actor_label())
+        .await?;
+    Ok((StatusCode::CREATED, Json(json!(res))))
+}
+
+async fn admin_overview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, true)?;
+    ctx.require_super_admin()?;
+    let overview = state.store.admin_overview().await?;
+    Ok(Json(json!(overview)))
+}
+
+async fn admin_create_contador(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<CreateContadorRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, true)?;
+    ctx.require_super_admin()?;
+    let user = state.store.create_contador(req, &ctx.user.id).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "user": user }))))
+}
+
+async fn admin_update_user(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateAdminUserRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, true)?;
+    ctx.require_super_admin()?;
+    let updated = state.store.admin_update_user(&id, req).await?;
+    Ok(Json(json!({ "contador": updated })))
 }
 
 async fn bootstrap(
@@ -386,8 +451,10 @@ async fn bootstrap(
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
     let mut bundle = state.store.bootstrap().await?;
-    let allowed = ctx.allowed_company_ids();
-    filter_bootstrap_by_companies(&mut bundle, &allowed);
+    if !ctx.is_super_admin() {
+        let allowed = ctx.allowed_company_ids();
+        filter_bootstrap_by_companies(&mut bundle, &allowed);
+    }
     Ok(Json(bundle))
 }
 
@@ -397,8 +464,10 @@ async fn get_state(
 ) -> Result<Json<Value>, ApiError> {
     let ctx = auth::extract_auth(&headers, state.auth_required)?;
     let mut payload = state.store.get_state().await?;
-    let allowed = ctx.allowed_company_ids();
-    filter_estado_by_companies(&mut payload, &allowed);
+    if !ctx.is_super_admin() {
+        let allowed = ctx.allowed_company_ids();
+        filter_estado_by_companies(&mut payload, &allowed);
+    }
     Ok(Json(payload))
 }
 
@@ -1906,12 +1975,12 @@ mod tests {
         );
 
         // 3. Multi-tenant read isolation (IDOR prevention)
-        let tok_contador = login_as(&router, "contador@vertika.co").await;
+        let tok_superadmin = login_as(&router, "superadmin@vertika.co").await;
         let scoped_create = router
             .clone()
             .oneshot(
                 Request::post("/api/v1/auth/users")
-                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("authorization", format!("Bearer {tok_superadmin}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
@@ -2077,12 +2146,13 @@ mod tests {
             .unwrap();
         assert_eq!(esc_role.status(), StatusCode::FORBIDDEN);
 
-        // Create a CONTADOR scoped strictly to ["altavista"]
+        // Create a CONTADOR scoped strictly to ["altavista"] (only SUPER_ADMIN can create CONTADOR)
+        let tok_sa = login_as(&router, "superadmin@vertika.co").await;
         let created_scoped = router
             .clone()
             .oneshot(
                 Request::post("/api/v1/auth/users")
-                    .header("authorization", format!("Bearer {tok_global_contador}"))
+                    .header("authorization", format!("Bearer {tok_sa}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
@@ -2405,5 +2475,244 @@ mod tests {
 
         exercise_auth_and_rbac(&router, false).await;
         exercise_relational_http_lifecycle(router).await;
+    }
+
+    #[tokio::test]
+    async fn saas_superadmin_quotas_and_company_self_service_work() {
+        let router = app();
+        let tok_sa = login_as(&router, "superadmin@vertika.co").await;
+        let tok_demo_contador = login_as(&router, "contador@vertika.co").await;
+
+        // 1. CONTADOR cannot access /api/v1/admin/overview or create another CONTADOR
+        let denied_overview = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/overview")
+                    .header("authorization", format!("Bearer {tok_demo_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_overview.status(), StatusCode::FORBIDDEN);
+
+        let denied_contador = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_demo_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "clon.contador@vertika.co",
+                            "nombre": "Contador Clon",
+                            "password": "claveSegura2026",
+                            "rol": "CONTADOR",
+                            "companyIds": ["altavista"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_contador.status(), StatusCode::FORBIDDEN);
+
+        // 2. SUPER_ADMIN creates a trial CONTADOR with maxCopropiedades=1, diasPrueba=14
+        let create_trial = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/admin/contadores")
+                    .header("authorization", format!("Bearer {tok_sa}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "firma.prueba@vertika.co",
+                            "nombre": "Firma Prueba SAS",
+                            "password": "claveSegura2026",
+                            "planNombre": "PRUEBA",
+                            "maxCopropiedades": 1,
+                            "diasPrueba": 14
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_trial.status(), StatusCode::CREATED);
+        let trial_user = json_body(create_trial).await["user"].clone();
+        let trial_id = trial_user["id"].as_str().unwrap().to_string();
+        assert_eq!(trial_user["maxCopropiedades"], 1);
+
+        // 3. Trial CONTADOR logs in and creates company #1 (allowed within quota 1/1)
+        let login_trial = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "firma.prueba@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_trial.status(), StatusCode::OK);
+        let tok_trial = json_body(login_trial).await["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let comp1 = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies")
+                    .header("authorization", format!("Bearer {tok_trial}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nit": "901.555.100-1",
+                            "razonSocial": "Conjunto Residencial Los Pinos P.H.",
+                            "nombreCorto": "Los Pinos",
+                            "presupuestoAnual": 240000000
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(comp1.status(), StatusCode::CREATED);
+        let comp1_body = json_body(comp1).await;
+        let comp1_id = comp1_body["copropiedad"]["id"].as_str().unwrap().to_string();
+        let tok_trial_refreshed = comp1_body["token"].as_str().unwrap().to_string();
+        assert_eq!(comp1_id, "los-pinos");
+
+        // 4. Trial CONTADOR tries to create company #2 -> blocked by quota (403)
+        let comp2_blocked = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies")
+                    .header("authorization", format!("Bearer {tok_trial_refreshed}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nit": "901.555.200-2",
+                            "razonSocial": "Edificio Cedros P.H.",
+                            "nombreCorto": "Cedros"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(comp2_blocked.status(), StatusCode::FORBIDDEN);
+
+        // 5. Trial CONTADOR creates an ADMINISTRADOR for their own company (allowed)
+        let create_sub_admin = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/users")
+                    .header("authorization", format!("Bearer {tok_trial_refreshed}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "email": "admin.pinos@vertika.co",
+                            "nombre": "Admin Los Pinos",
+                            "password": "claveSegura2026",
+                            "rol": "ADMINISTRADOR",
+                            "companyIds": [comp1_id]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_sub_admin.status(), StatusCode::CREATED);
+
+        // 6. SUPER_ADMIN upgrades quota to 2 -> now company #2 succeeds
+        let upgrade = router
+            .clone()
+            .oneshot(
+                Request::patch(format!("/api/v1/admin/users/{trial_id}"))
+                    .header("authorization", format!("Bearer {tok_sa}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "maxCopropiedades": 2, "planNombre": "FIRMA_2" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upgrade.status(), StatusCode::OK);
+
+        let comp2_ok = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies")
+                    .header("authorization", format!("Bearer {tok_trial_refreshed}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "nit": "901.555.200-2",
+                            "razonSocial": "Edificio Cedros P.H.",
+                            "nombreCorto": "Cedros"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(comp2_ok.status(), StatusCode::CREATED);
+
+        // 7. SUPER_ADMIN suspends the trial account -> login is rejected with 403
+        let suspend = router
+            .clone()
+            .oneshot(
+                Request::patch(format!("/api/v1/admin/users/{trial_id}"))
+                    .header("authorization", format!("Bearer {tok_sa}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "activo": false }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(suspend.status(), StatusCode::OK);
+
+        let login_suspended = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "email": "firma.prueba@vertika.co", "password": "claveSegura2026" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login_suspended.status(), StatusCode::FORBIDDEN);
+
+        // 8. SUPER_ADMIN overview reflects accurate counts
+        let ov = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/overview")
+                    .header("authorization", format!("Bearer {tok_sa}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ov.status(), StatusCode::OK);
+        let ov_body = json_body(ov).await;
+        assert!(ov_body["totalContadores"].as_u64().unwrap() >= 2);
+        assert!(ov_body["cuentasSuspendidasOVencidas"].as_u64().unwrap() >= 1);
     }
 }

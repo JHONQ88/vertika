@@ -3,10 +3,11 @@ import type { PreAsiento } from './domain/types';
 import { acarrearPreAsiento } from './domain/engine';
 import { acciones, empresaActiva, esPeriodoBloqueado, tienePermiso, useAuth, useEstado, useSyncStatus, DATOS } from './store';
 import { fmtPeriodo } from './domain/format';
-import { FKeyBar, Sidebar, Topbar } from './components/Shell';
+import { FKeyBar, MobileBottomNav, MobileDrawer, Sidebar, Topbar } from './components/Shell';
 import { AyudaModal, CommandPalette, EmpresasModal, PeriodosModal } from './components/Overlays';
 import { AuthModal } from './components/AuthModal';
 import { CopilotoEveModal } from './components/CopilotoEveModal';
+import { NuevaCopropiedadModal } from './components/NuevaCopropiedadModal';
 import { ToastStack } from './components/ui';
 import { MODO_COUNT, type FiltrosVista, type Toast, type ToastData, type ViewKey, type VistaProps } from './ui-types';
 import { Bandeja } from './views/Bandeja';
@@ -18,8 +19,9 @@ import { Comprobantes } from './views/Comprobantes';
 import { Maestros } from './views/Maestros';
 import { Cierre } from './views/Cierre';
 import { Ajustes } from './views/Ajustes';
+import { AdminPanel } from './views/AdminPanel';
 
-type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | 'auth' | 'eve' | null;
+type Overlay = 'palette' | 'empresas' | 'periodos' | 'ayuda' | 'auth' | 'eve' | 'nueva-empresa' | null;
 
 export default function App() {
   const estado = useEstado();
@@ -27,6 +29,7 @@ export default function App() {
   const auth = useAuth();
   const [view, setView] = useState<ViewKey>('bandeja');
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [filtros, setFiltrosState] = useState<FiltrosVista>({});
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [modos, setModos] = useState<Record<ViewKey, number>>({
@@ -39,8 +42,12 @@ export default function App() {
     maestros: 0,
     cierre: 0,
     ajustes: 0,
+    admin: 0,
   });
   const [preSeleccionado, setPreSeleccionado] = useState<string | null>(null);
+
+  const isSuperAdmin = auth.user.rol === 'SUPER_ADMIN' || !!auth.user.isSuperAdmin;
+  const puedeCrearEmpresa = tienePermiso(auth.user.rol, 'contabilidad');
 
   const empresa = empresaActiva(estado);
   const pendientes = estado.preAsientos.filter((p) => p.empresaId === empresa.id).length;
@@ -239,6 +246,8 @@ export default function App() {
         return <Cierre {...vistaProps} />;
       case 'ajustes':
         return <Ajustes {...vistaProps} />;
+      case 'admin':
+        return isSuperAdmin ? <AdminPanel toast={toast} /> : null;
       default:
         return null;
     }
@@ -258,6 +267,7 @@ export default function App() {
         onAyuda={() => setOverlay('ayuda')}
         onAuth={() => setOverlay('auth')}
         onCopiloto={() => setOverlay('eve')}
+        onMenu={() => setMobileNavOpen(true)}
       />
 
       <div className="body">
@@ -268,11 +278,35 @@ export default function App() {
           pendientes={pendientes}
           periodo={estado.periodo}
           bloqueado={bloqueado}
+          isSuperAdmin={isSuperAdmin}
         />
         <main className="main">{renderVista()}</main>
       </div>
 
       <FKeyBar onKey={onKey} />
+
+      <MobileDrawer
+        open={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+        view={view}
+        setView={irA}
+        empresa={empresa}
+        pendientes={pendientes}
+        periodo={estado.periodo}
+        bloqueado={bloqueado}
+        isSuperAdmin={isSuperAdmin}
+        puedeCrearEmpresa={puedeCrearEmpresa}
+        onEmpresas={() => setOverlay('empresas')}
+        onPeriodo={() => setOverlay('periodos')}
+        onNuevaEmpresa={() => setOverlay('nueva-empresa')}
+      />
+
+      <MobileBottomNav
+        view={view}
+        setView={irA}
+        pendientes={pendientes}
+        onOpenMenu={() => setMobileNavOpen(true)}
+      />
 
       {overlay === 'palette' && (
         <CommandPalette
@@ -293,10 +327,22 @@ export default function App() {
         />
       )}
 
-      {overlay === 'empresas' && <EmpresasModal estado={estado} onClose={() => setOverlay(null)} />}
+      {overlay === 'empresas' && (
+        <EmpresasModal
+          estado={estado}
+          onClose={() => setOverlay(null)}
+          puedeCrear={puedeCrearEmpresa}
+          onNuevaCopropiedad={() => setOverlay('nueva-empresa')}
+        />
+      )}
       {overlay === 'periodos' && <PeriodosModal estado={estado} onClose={() => setOverlay(null)} />}
       {overlay === 'ayuda' && <AyudaModal onClose={() => setOverlay(null)} />}
       <AuthModal open={overlay === 'auth'} onClose={() => setOverlay(null)} toast={toast} />
+      <NuevaCopropiedadModal
+        open={overlay === 'nueva-empresa'}
+        onClose={() => setOverlay(null)}
+        toast={toast}
+      />
       {overlay === 'eve' && (
         <CopilotoEveModal
           empresa={empresa}

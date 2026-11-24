@@ -264,12 +264,32 @@ export function CommandPalette({
 export function EmpresasModal({
   estado,
   onClose,
+  onNuevaCopropiedad,
+  puedeCrear,
 }: {
   estado: EstadoApp;
   onClose: () => void;
+  onNuevaCopropiedad?: () => void;
+  puedeCrear?: boolean;
 }) {
   return (
     <Modal open onClose={onClose} title="Cambiar de conjunto" subtitle="Un contador puede operar varios conjuntos desde una sola consola" width={720}>
+      {puedeCrear && onNuevaCopropiedad && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+          <Btn
+            size="sm"
+            variant="primary"
+            icon="plus"
+            type="button"
+            onClick={() => {
+              onClose();
+              onNuevaCopropiedad();
+            }}
+          >
+            Crear copropiedad
+          </Btn>
+        </div>
+      )}
       <div className="empresas">
         {DATOS.companies.map((c) => {
           const activa = c.id === estado.activeCompanyId;

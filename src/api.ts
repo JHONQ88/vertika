@@ -13,8 +13,15 @@ import type {
 
 export const API_URL: string = (import.meta as any).env?.VITE_API_URL || '';
 export const apiEnabled = !!API_URL;
+export const DEMO_MODE_ENABLED: boolean =
+  (import.meta as any).env?.VITE_DEMO_MODE === 'true' || !apiEnabled;
 
-export type UserRole = 'CONTADOR' | 'ADMINISTRADOR' | 'REVISOR_FISCAL' | 'CONSEJO';
+export type UserRole =
+  | 'SUPER_ADMIN'
+  | 'CONTADOR'
+  | 'ADMINISTRADOR'
+  | 'REVISOR_FISCAL'
+  | 'CONSEJO';
 
 export interface AuthUser {
   id: string;
@@ -22,6 +29,10 @@ export interface AuthUser {
   nombre: string;
   rol: UserRole;
   roles?: Array<{ company_id: string; role: UserRole }>;
+  isSuperAdmin?: boolean;
+  maxCopropiedades?: number;
+  planNombre?: string;
+  expiresAt?: string | null;
 }
 
 export interface LoginResponse {
@@ -238,6 +249,110 @@ export async function createUserApi(payload: CreateUserPayload): Promise<{ user:
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export interface CreateCompanyPayload {
+  nit: string;
+  razonSocial: string;
+  nombreCorto: string;
+  ciudad?: string;
+  direccion?: string;
+  grupoNiif?: number;
+  periodoActual?: string;
+  presupuestoAnual?: number;
+  fondoImprevistosPct?: number;
+  tasaMoraMensual?: number;
+}
+
+export interface CreateCompanyResponse {
+  copropiedad: Copropiedad;
+  auditoria: EventoAuditoria;
+  user: AuthUser;
+  token: string;
+}
+
+export async function createCompanyApi(
+  payload: CreateCompanyPayload,
+): Promise<CreateCompanyResponse> {
+  return request<CreateCompanyResponse>('/api/v1/companies', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface AdminCompanyBrief {
+  id: string;
+  nit: string;
+  nombreCorto: string;
+  razonSocial: string;
+  periodoActual: string;
+}
+
+export interface AdminContadorItem {
+  id: string;
+  email: string;
+  nombre: string;
+  activo: boolean;
+  planNombre: string;
+  maxCopropiedades: number;
+  copropiedadesUsadas: number;
+  usuariosCreados: number;
+  expiresAt: string | null;
+  vencido: boolean;
+  createdAt: string;
+  copropiedades: AdminCompanyBrief[];
+}
+
+export interface AdminOverviewResponse {
+  totalContadores: number;
+  contadoresActivos: number;
+  totalCopropiedades: number;
+  pruebasActivas: number;
+  cuentasSuspendidasOVencidas: number;
+  contadores: AdminContadorItem[];
+}
+
+export interface CreateContadorPayload {
+  email: string;
+  nombre: string;
+  password: string;
+  planNombre?: string;
+  maxCopropiedades?: number;
+  diasPrueba?: number;
+}
+
+export interface UpdateAdminUserPayload {
+  activo?: boolean;
+  maxCopropiedades?: number;
+  planNombre?: string;
+  expiresAt?: string;
+  extendDays?: number;
+}
+
+export async function fetchAdminOverviewApi(): Promise<AdminOverviewResponse> {
+  return request<AdminOverviewResponse>('/api/v1/admin/overview');
+}
+
+export async function adminCreateContadorApi(
+  payload: CreateContadorPayload,
+): Promise<{ user: AuthUser }> {
+  return request<{ user: AuthUser }>('/api/v1/admin/contadores', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function adminUpdateUserApi(
+  userId: string,
+  payload: UpdateAdminUserPayload,
+): Promise<{ contador: AdminContadorItem }> {
+  return request<{ contador: AdminContadorItem }>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export async function fetchBootstrap(): Promise<BootstrapPayload> {

@@ -1,15 +1,19 @@
 pub mod memory;
 pub mod postgres;
 
-use crate::auth::{AuthUser, CreateUserRequest};
+use crate::auth::{
+    AdminContadorItem, AdminOverviewResponse, AuthUser, CreateContadorRequest, CreateUserRequest,
+    UpdateAdminUserRequest,
+};
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
     ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
-    ClosePeriodResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
-    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
-    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty,
-    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
+    ClosePeriodResult, CreateCompanyRequest, CreateCompanyResult, CreateEntryRequest,
+    CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
+    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
+    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
+    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use chrono::NaiveDate;
@@ -53,10 +57,62 @@ impl Store {
         }
     }
 
-    pub async fn create_user(&self, req: CreateUserRequest) -> Result<AuthUser, ApiError> {
+    pub async fn create_user(
+        &self,
+        req: CreateUserRequest,
+        created_by: Option<&str>,
+    ) -> Result<AuthUser, ApiError> {
         match self {
-            Store::Memory(r) => r.create_user(req).await,
-            Store::Postgres(r) => r.create_user(req).await,
+            Store::Memory(r) => r.create_user(req, created_by).await,
+            Store::Postgres(r) => r.create_user(req, created_by).await,
+        }
+    }
+
+    pub async fn create_contador(
+        &self,
+        req: CreateContadorRequest,
+        created_by: &str,
+    ) -> Result<AuthUser, ApiError> {
+        match self {
+            Store::Memory(r) => r.create_contador(req, created_by).await,
+            Store::Postgres(r) => r.create_contador(req, created_by).await,
+        }
+    }
+
+    pub async fn admin_overview(&self) -> Result<AdminOverviewResponse, ApiError> {
+        match self {
+            Store::Memory(r) => r.admin_overview().await,
+            Store::Postgres(r) => r.admin_overview().await,
+        }
+    }
+
+    pub async fn admin_update_user(
+        &self,
+        target_user_id: &str,
+        req: UpdateAdminUserRequest,
+    ) -> Result<AdminContadorItem, ApiError> {
+        match self {
+            Store::Memory(r) => r.admin_update_user(target_user_id, req).await,
+            Store::Postgres(r) => r.admin_update_user(target_user_id, req).await,
+        }
+    }
+
+    pub async fn create_company(
+        &self,
+        owner_user_id: &str,
+        is_super_admin: bool,
+        req: CreateCompanyRequest,
+        actor: &str,
+    ) -> Result<CreateCompanyResult, ApiError> {
+        match self {
+            Store::Memory(r) => {
+                r.create_company(owner_user_id, is_super_admin, req, actor)
+                    .await
+            }
+            Store::Postgres(r) => {
+                r.create_company(owner_user_id, is_super_admin, req, actor)
+                    .await
+            }
         }
     }
 
@@ -778,4 +834,84 @@ pub fn build_pre_entry_document(
         "total": total_debit,
         "retenciones": [],
     })
+}
+
+pub fn slugify_company_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut prev_dash = false;
+    for ch in name.trim().chars() {
+        let lower = match ch {
+            'á' | 'Á' => 'a',
+            'é' | 'É' => 'e',
+            'í' | 'Í' => 'i',
+            'ó' | 'Ó' => 'o',
+            'ú' | 'Ú' | 'ü' | 'Ü' => 'u',
+            'ñ' | 'Ñ' => 'n',
+            other => other.to_ascii_lowercase(),
+        };
+        if lower.is_ascii_alphanumeric() {
+            slug.push(lower);
+            prev_dash = false;
+        } else if !prev_dash && !slug.is_empty() {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let cleaned = slug.trim_matches('-').to_string();
+    if cleaned.is_empty() {
+        "copropiedad".into()
+    } else {
+        cleaned.chars().take(48).collect()
+    }
+}
+
+pub fn derive_sigla(name: &str) -> String {
+    let initials: String = name
+        .split_whitespace()
+        .filter_map(|w| w.chars().find(|c| c.is_alphanumeric()))
+        .take(2)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if initials.len() >= 2 {
+        initials
+    } else {
+        let fallback: String = name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(2)
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        if fallback.is_empty() {
+            "PH".into()
+        } else {
+            fallback
+        }
+    }
+}
+
+pub fn default_rubros_for_company(company_id: &str, presupuesto_anual: Decimal) -> Vec<FrontendRubro> {
+    let base = if presupuesto_anual > Decimal::ZERO {
+        presupuesto_anual
+    } else {
+        Decimal::from(120_000_000)
+    };
+    let defs: [(&str, &str, &str, i64); 6] = [
+        ("vigilancia", "Vigilancia y seguridad", "513505", 38),
+        ("aseo", "Aseo y jardinería", "513510", 18),
+        ("energia", "Energía eléctrica áreas comunes", "513515", 12),
+        ("acueducto", "Acueducto y alcantarillado", "513525", 10),
+        ("mantenimiento", "Mantenimiento general y ascensores", "514505", 12),
+        ("honorarios", "Honorarios y gastos administrativos", "511005", 10),
+    ];
+    defs.iter()
+        .map(|(key, nombre, cuenta, pct)| FrontendRubro {
+            id: format!("rub-{company_id}-{key}"),
+            empresa_id: company_id.into(),
+            key: (*key).into(),
+            nombre: (*nombre).into(),
+            centro: "GENERAL".into(),
+            cuenta: (*cuenta).into(),
+            presupuesto_anual: (base * Decimal::from(*pct) / Decimal::from(100)).round_dp(0),
+        })
+        .collect()
 }

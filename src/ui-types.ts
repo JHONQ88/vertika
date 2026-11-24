@@ -10,7 +10,8 @@ export type ViewKey =
   | 'comprobantes'
   | 'maestros'
   | 'cierre'
-  | 'ajustes';
+  | 'ajustes'
+  | 'admin';
 
 export interface FiltrosVista {
   cuenta?: string;
@@ -50,6 +51,7 @@ export const MODO_COUNT: Record<ViewKey, number> = {
   maestros: 1,
   cierre: 1,
   ajustes: 1,
+  admin: 1,
 };
 
 export const NAV: Array<{

@@ -14,6 +14,8 @@ const HASH_ITERATIONS: usize = 2_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
+    #[serde(rename = "SUPER_ADMIN")]
+    SuperAdmin,
     #[serde(rename = "CONTADOR")]
     Contador,
     #[serde(rename = "ADMINISTRADOR")]
@@ -27,6 +29,7 @@ pub enum Role {
 impl Role {
     pub fn as_str(self) -> &'static str {
         match self {
+            Role::SuperAdmin => "SUPER_ADMIN",
             Role::Contador => "CONTADOR",
             Role::Administrador => "ADMINISTRADOR",
             Role::RevisorFiscal => "REVISOR_FISCAL",
@@ -36,6 +39,7 @@ impl Role {
 
     pub fn from_str_code(s: &str) -> Option<Self> {
         match s.trim().to_uppercase().as_str() {
+            "SUPER_ADMIN" => Some(Role::SuperAdmin),
             "CONTADOR" => Some(Role::Contador),
             "ADMINISTRADOR" => Some(Role::Administrador),
             "REVISOR_FISCAL" => Some(Role::RevisorFiscal),
@@ -43,6 +47,14 @@ impl Role {
             _ => None,
         }
     }
+}
+
+fn default_max_copropiedades() -> i32 {
+    1
+}
+
+fn default_plan_nombre() -> String {
+    "PRUEBA".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +70,22 @@ pub struct AuthUser {
     pub nombre: String,
     pub rol: Role,
     pub roles: Vec<CompanyRole>,
+    #[serde(default, rename = "isSuperAdmin", alias = "is_super_admin")]
+    pub is_super_admin: bool,
+    #[serde(
+        default = "default_max_copropiedades",
+        rename = "maxCopropiedades",
+        alias = "max_copropiedades"
+    )]
+    pub max_copropiedades: i32,
+    #[serde(
+        default = "default_plan_nombre",
+        rename = "planNombre",
+        alias = "plan_nombre"
+    )]
+    pub plan_nombre: String,
+    #[serde(default, rename = "expiresAt", alias = "expires_at")]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,12 +121,91 @@ pub struct CreateUserRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateContadorRequest {
+    pub email: String,
+    pub nombre: String,
+    pub password: String,
+    #[serde(default, alias = "plan_nombre")]
+    pub plan_nombre: Option<String>,
+    #[serde(default, alias = "max_copropiedades")]
+    pub max_copropiedades: Option<i32>,
+    #[serde(default, alias = "dias_prueba")]
+    pub dias_prueba: Option<i32>,
+    #[serde(default, alias = "company_ids")]
+    pub company_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAdminUserRequest {
+    #[serde(default)]
+    pub activo: Option<bool>,
+    #[serde(default, alias = "max_copropiedades")]
+    pub max_copropiedades: Option<i32>,
+    #[serde(default, alias = "plan_nombre")]
+    pub plan_nombre: Option<String>,
+    /// Explicit ISO-8601 timestamp or empty string to clear expiration (permanent).
+    #[serde(default, alias = "expires_at")]
+    pub expires_at: Option<String>,
+    /// Convenience shortcut: extend current expiration (or now) by N days.
+    #[serde(default, alias = "extend_days")]
+    pub extend_days: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminCompanyBrief {
+    pub id: String,
+    pub nit: String,
+    pub nombre_corto: String,
+    pub razon_social: String,
+    pub periodo_actual: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminContadorItem {
+    pub id: String,
+    pub email: String,
+    pub nombre: String,
+    pub activo: bool,
+    pub plan_nombre: String,
+    pub max_copropiedades: i32,
+    pub copropiedades_usadas: usize,
+    pub usuarios_creados: usize,
+    pub expires_at: Option<String>,
+    pub vencido: bool,
+    pub created_at: String,
+    pub copropiedades: Vec<AdminCompanyBrief>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminOverviewResponse {
+    pub total_contadores: usize,
+    pub contadores_activos: usize,
+    pub total_copropiedades: usize,
+    pub pruebas_activas: usize,
+    pub cuentas_suspendidas_o_vencidas: usize,
+    pub contadores: Vec<AdminContadorItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JwtClaims {
     sub: String,
     email: String,
     nombre: String,
     rol: Role,
     roles: Vec<CompanyRole>,
+    #[serde(default)]
+    is_super_admin: bool,
+    #[serde(default = "default_max_copropiedades")]
+    max_copropiedades: i32,
+    #[serde(default = "default_plan_nombre")]
+    plan_nombre: String,
+    #[serde(default)]
+    expires_at: Option<String>,
     exp: i64,
 }
 
@@ -123,7 +230,25 @@ impl AuthContext {
                         role: Role::Contador,
                     })
                     .collect(),
+                is_super_admin: false,
+                max_copropiedades: 5,
+                plan_nombre: "DEMO".into(),
+                expires_at: None,
             },
+        }
+    }
+
+    pub fn is_super_admin(&self) -> bool {
+        self.user.is_super_admin || self.user.rol == Role::SuperAdmin
+    }
+
+    pub fn require_super_admin(&self) -> Result<(), ApiError> {
+        if self.is_super_admin() {
+            Ok(())
+        } else {
+            Err(ApiError::Forbidden(
+                "Esta operación es exclusiva del propietario de la plataforma (SUPER_ADMIN).".into(),
+            ))
         }
     }
 
@@ -132,6 +257,9 @@ impl AuthContext {
     }
 
     pub fn require_any_role(&self, allowed: &[Role]) -> Result<(), ApiError> {
+        if self.is_super_admin() {
+            return Ok(());
+        }
         let has_global = allowed.contains(&self.user.rol);
         let has_company = self.user.roles.iter().any(|r| allowed.contains(&r.role));
         if has_global || has_company {
@@ -145,6 +273,9 @@ impl AuthContext {
     }
 
     pub fn require_company_roles(&self, company_id: &str, allowed: &[Role]) -> Result<(), ApiError> {
+        if self.is_super_admin() {
+            return Ok(());
+        }
         let matched = self
             .user
             .roles
@@ -165,6 +296,9 @@ impl AuthContext {
     }
 
     pub fn require_company_access(&self, company_id: &str) -> Result<(), ApiError> {
+        if self.is_super_admin() {
+            return Ok(());
+        }
         self.require_company_roles(
             company_id,
             &[
@@ -378,6 +512,15 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     constant_time_eq(expected.as_bytes(), stored_hash.as_bytes())
 }
 
+pub fn is_expired_iso(expires_at: Option<&str>) -> bool {
+    let Some(raw) = expires_at.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.with_timezone(&Utc) < Utc::now())
+        .unwrap_or(false)
+}
+
 pub fn issue_token(user: &AuthUser) -> Result<String, ApiError> {
     let header_b64 = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
     let claims = JwtClaims {
@@ -386,6 +529,10 @@ pub fn issue_token(user: &AuthUser) -> Result<String, ApiError> {
         nombre: user.nombre.clone(),
         rol: user.rol,
         roles: user.roles.clone(),
+        is_super_admin: user.is_super_admin || user.rol == Role::SuperAdmin,
+        max_copropiedades: user.max_copropiedades,
+        plan_nombre: user.plan_nombre.clone(),
+        expires_at: user.expires_at.clone(),
         exp: Utc::now().timestamp() + 60 * 60 * 12,
     };
     let payload_json = serde_json::to_vec(&claims)
@@ -426,6 +573,11 @@ pub fn verify_token(token: &str) -> Result<AuthUser, ApiError> {
     if claims.exp < Utc::now().timestamp() {
         return Err(ApiError::Unauthorized("La sesión ha expirado.".into()));
     }
+    if is_expired_iso(claims.expires_at.as_deref()) {
+        return Err(ApiError::Forbidden(
+            "Tu periodo de prueba finalizó. Contacta a Vértika para activar tu plan.".into(),
+        ));
+    }
 
     Ok(AuthUser {
         id: claims.sub,
@@ -433,6 +585,10 @@ pub fn verify_token(token: &str) -> Result<AuthUser, ApiError> {
         nombre: claims.nombre,
         rol: claims.rol,
         roles: claims.roles,
+        is_super_admin: claims.is_super_admin || claims.rol == Role::SuperAdmin,
+        max_copropiedades: claims.max_copropiedades,
+        plan_nombre: claims.plan_nombre,
+        expires_at: claims.expires_at,
     })
 }
 
@@ -467,6 +623,14 @@ pub struct DemoSeedUser {
 }
 
 pub const DEMO_PASSWORD: &str = "vertika2026";
+
+pub const DEMO_SUPER_ADMIN: DemoSeedUser = DemoSeedUser {
+    id: "usr-superadmin",
+    email: "superadmin@vertika.co",
+    nombre: "Propietario Vértika",
+    rol: Role::SuperAdmin,
+    salt: "salt-superadmin-v1",
+};
 
 pub const DEMO_USERS: [DemoSeedUser; 4] = [
     DemoSeedUser {
