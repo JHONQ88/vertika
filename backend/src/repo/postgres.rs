@@ -2520,9 +2520,22 @@ impl PostgresRepo {
         let user_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT DISTINCT u.id
                FROM usuarios u
-               LEFT JOIN usuario_copropiedad_roles r ON r.usuario_id = u.id
               WHERE u.is_super_admin = FALSE
-                AND (r.rol = 'CONTADOR' OR u.plan_nombre <> 'USUARIO')
+                AND (
+                    EXISTS (
+                        SELECT 1
+                          FROM usuario_copropiedad_roles r
+                         WHERE r.usuario_id = u.id AND r.rol = 'CONTADOR'
+                    )
+                    OR (
+                        u.plan_nombre <> 'USUARIO'
+                        AND NOT EXISTS (
+                            SELECT 1
+                              FROM usuario_copropiedad_roles r2
+                             WHERE r2.usuario_id = u.id
+                        )
+                    )
+                )
               ORDER BY u.id",
         )
         .fetch_all(&self.db.pool)

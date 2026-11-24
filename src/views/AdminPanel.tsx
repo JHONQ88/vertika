@@ -7,7 +7,7 @@ import {
   type AdminOverviewResponse,
 } from '../api';
 import type { ToastData } from '../ui-types';
-import { Badge, Btn, Modal, ViewHeader } from '../components/ui';
+import { Badge, Btn, Modal, Stat, ViewHeader } from '../components/ui';
 
 function fmtFechaCorta(iso: string | null): string {
   if (!iso) return 'Sin vencimiento';
@@ -160,26 +160,28 @@ export function AdminPanel({ toast }: { toast: (t: ToastData) => void }) {
       {data && (
         <>
           <div className="stat-grid">
-            <div className="stat-card">
-              <small>Contadores registrados</small>
-              <strong className="mono">{data.totalContadores}</strong>
-              <span>{data.contadoresActivos} activos actualmente</span>
-            </div>
-            <div className="stat-card">
-              <small>Copropiedades en plataforma</small>
-              <strong className="mono">{data.totalCopropiedades}</strong>
-              <span>Edificios y conjuntos activos</span>
-            </div>
-            <div className="stat-card">
-              <small>Pruebas vigentes</small>
-              <strong className="mono">{data.pruebasActivas}</strong>
-              <span>Con fecha límite configurada</span>
-            </div>
-            <div className="stat-card">
-              <small>Suspendidos o vencidos</small>
-              <strong className="mono">{data.cuentasSuspendidasOVencidas}</strong>
-              <span>Acceso bloqueado automáticamente</span>
-            </div>
+            <Stat
+              label="Contadores registrados"
+              value={String(data.totalContadores)}
+              hint={`${data.contadoresActivos} activos actualmente`}
+            />
+            <Stat
+              label="Copropiedades en plataforma"
+              value={String(data.totalCopropiedades)}
+              hint="Edificios y conjuntos activos"
+            />
+            <Stat
+              label="Pruebas vigentes"
+              value={String(data.pruebasActivas)}
+              hint="Con fecha límite configurada"
+              tone={data.pruebasActivas > 0 ? 'accent' : 'neutral'}
+            />
+            <Stat
+              label="Suspendidos o vencidos"
+              value={String(data.cuentasSuspendidasOVencidas)}
+              hint="Acceso bloqueado automáticamente"
+              tone={data.cuentasSuspendidasOVencidas > 0 ? 'warn' : 'neutral'}
+            />
           </div>
 
           <section className="card">
