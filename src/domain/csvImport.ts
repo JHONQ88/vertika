@@ -1,6 +1,16 @@
-import type { Tercero } from './types';
+import type { CuentaPuc, Tercero } from './types';
 
-export type CsvImportKind = 'unidades' | 'terceros' | 'saldos';
+export type CsvImportKind = 'unidades' | 'terceros' | 'saldos' | 'puc';
+
+export interface PucCsvRow {
+  codigo: string;
+  nombre: string;
+  tipo: CuentaPuc['tipo'];
+  naturaleza: 'D' | 'C';
+  requiereTercero: boolean;
+  requiereUnidad: boolean;
+  nota?: string;
+}
 
 export interface TerceroCsvRow {
   nombre: string;
@@ -60,6 +70,14 @@ export const PLANTILLA_SALDOS_CSV = [
   '220505;900112233;;Saldo inicial proveedor Vigilancia;0;4850000',
   '281510;;;Fondo de Imprevistos acumulado Ley 675;0;12000000',
   '311505;;;Patrimonio / Excedentes acumulados iniciales;0;41000000',
+].join('\r\n');
+
+export const PLANTILLA_PUC_CSV = [
+  'codigo;nombre;tipo;naturaleza;requiereTercero;requiereUnidad;nota',
+  '514520;Mantenimiento citofonía y cámaras CCTV;GASTO;D;SI;NO;Subcuenta personalizada',
+  '514525;Mantenimiento piscinas y zonas húmedas;GASTO;D;SI;NO;Subcuenta personalizada',
+  '417040;Alquiler de salón social;INGRESO;C;SI;SI;Ingreso no operacional PH',
+  '111020;Banco cuenta ahorros reserva fachadas;ACTIVO;D;NO;NO;Cuenta bancaria auxiliar',
 ].join('\r\n');
 
 export function descargarPlantillaCsv(filename: string, content: string): void {
@@ -295,6 +313,79 @@ export function parseSaldosInicialesCsv(raw: string): { rows: SaldoInicialCsvRow
 
   if (objs.length === 0) {
     errors.push('No se encontraron filas de saldos iniciales.');
+  }
+  return { rows, errors };
+}
+
+function inferirTipoNaturalezaPuc(
+  codigo: string,
+  tipoRaw: string,
+  natRaw: string,
+): { tipo: CuentaPuc['tipo']; naturaleza: 'D' | 'C' } {
+  const t = tipoRaw.trim().toUpperCase();
+  let tipo: CuentaPuc['tipo'];
+  if (t.startsWith('ACT')) tipo = 'ACTIVO';
+  else if (t.startsWith('PAS')) tipo = 'PASIVO';
+  else if (t.startsWith('PAT')) tipo = 'PATRIMONIO';
+  else if (t.startsWith('ING')) tipo = 'INGRESO';
+  else if (t.startsWith('GAS') || t.startsWith('COS')) tipo = 'GASTO';
+  else {
+    const first = codigo[0];
+    if (first === '1') tipo = 'ACTIVO';
+    else if (first === '2') tipo = 'PASIVO';
+    else if (first === '3') tipo = 'PATRIMONIO';
+    else if (first === '4') tipo = 'INGRESO';
+    else tipo = 'GASTO';
+  }
+
+  const n = natRaw.trim().toUpperCase();
+  let naturaleza: 'D' | 'C';
+  if (n === 'D' || n.startsWith('DEB')) naturaleza = 'D';
+  else if (n === 'C' || n.startsWith('CRE')) naturaleza = 'C';
+  else naturaleza = tipo === 'ACTIVO' || tipo === 'GASTO' ? 'D' : 'C';
+
+  return { tipo, naturaleza };
+}
+
+export function parsePucCsv(raw: string): { rows: PucCsvRow[]; errors: string[] } {
+  const objs = parseCsvObjects(raw);
+  const rows: PucCsvRow[] = [];
+  const errors: string[] = [];
+
+  objs.forEach((r, idx) => {
+    const line = idx + 2;
+    const codigo = pick(r, ['codigo', 'cuenta', 'codigocuenta', 'puc', 'code']).replace(/[^0-9]/g, '');
+    const nombre = pick(r, ['nombre', 'nombrecuenta', 'descripcion', 'cuenta', 'name']);
+    if (!codigo || codigo.length < 4) {
+      errors.push(`Fila ${line}: el código PUC debe tener al menos 4 dígitos.`);
+      return;
+    }
+    if (!nombre || nombre === codigo) {
+      errors.push(`Fila ${line} (${codigo}): falta el nombre de la cuenta.`);
+      return;
+    }
+    const { tipo, naturaleza } = inferirTipoNaturalezaPuc(
+      codigo,
+      pick(r, ['tipo', 'tipocuenta', 'grupo', 'clase']),
+      pick(r, ['naturaleza', 'nat']),
+    );
+    const reqTerRaw = pick(r, ['requieretercero', 'tercero', 'exigetercero']).toUpperCase();
+    const reqUniRaw = pick(r, ['requiereunidad', 'unidad', 'exigeunidad']).toUpperCase();
+    const nota = pick(r, ['nota', 'observacion', 'detalle']) || undefined;
+
+    rows.push({
+      codigo,
+      nombre,
+      tipo,
+      naturaleza,
+      requiereTercero: ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(reqTerRaw),
+      requiereUnidad: ['SI', 'SÍ', 'TRUE', '1', 'YES'].includes(reqUniRaw),
+      nota,
+    });
+  });
+
+  if (objs.length === 0) {
+    errors.push('No se encontraron cuentas PUC. Incluye al menos las columnas codigo y nombre.');
   }
   return { rows, errors };
 }

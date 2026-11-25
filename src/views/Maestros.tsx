@@ -71,7 +71,7 @@ export function Maestros(props: VistaProps) {
 
   const [modalTercero, setModalTercero] = useState(false);
   const [modalCopiarTerceros, setModalCopiarTerceros] = useState(false);
-  const [importCsvKind, setImportCsvKind] = useState<'unidades' | 'terceros' | null>(null);
+  const [importCsvKind, setImportCsvKind] = useState<'unidades' | 'terceros' | 'puc' | null>(null);
   const [origenCopiaId, setOrigenCopiaId] = useState('');
   const [copiandoTerceros, setCopiandoTerceros] = useState(false);
   const otrasCopropiedades = DATOS.companies.filter((c) => c.id !== empresa.id);
@@ -332,9 +332,14 @@ export function Maestros(props: VistaProps) {
         actions={
           <>
             {tab === 'puc' && puedeCrearPuc && (
-              <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaCuenta}>
-                Nueva cuenta
-              </Btn>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('puc')}>
+                  Importar PUC CSV
+                </Btn>
+                <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaCuenta}>
+                  Nueva cuenta
+                </Btn>
+              </div>
             )}
             {tab === 'unidades' && puedeEditarMaestros && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

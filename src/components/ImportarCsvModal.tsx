@@ -1,14 +1,17 @@
 import { useMemo, useState } from 'react';
 import {
   descargarPlantillaCsv,
+  parsePucCsv,
   parseSaldosInicialesCsv,
   parseTercerosCsv,
   parseUnidadesCsv,
+  PLANTILLA_PUC_CSV,
   PLANTILLA_SALDOS_CSV,
   PLANTILLA_TERCEROS_CSV,
   PLANTILLA_UNIDADES_CSV,
   type CsvImportKind,
 } from '../domain/csvImport';
+import { CUENTAS } from '../domain/puc';
 import { fmtMoney } from '../domain/format';
 import { acciones, DATOS, tercerosDe, unidadesDe } from '../store';
 import type { Copropiedad, EstadoApp } from '../domain/types';
@@ -36,6 +39,12 @@ const CONFIG: Record<
     subtitle: 'Crea el comprobante contable CC de apertura validando partida doble al peso exacto',
     filename: 'plantilla-saldos-iniciales-vertika.csv',
     plantilla: PLANTILLA_SALDOS_CSV,
+  },
+  puc: {
+    title: 'Importar catálogo PUC propio (Excel / CSV)',
+    subtitle: 'Agrega tus cuentas personalizadas; tipo y naturaleza se deducen automáticamente si se omiten',
+    filename: 'plantilla-puc-vertika.csv',
+    plantilla: PLANTILLA_PUC_CSV,
   },
 };
 
@@ -65,6 +74,7 @@ export function ImportarCsvModal({
     if (!rawText.trim()) return null;
     if (kind === 'unidades') return { kind: 'unidades' as const, ...parseUnidadesCsv(rawText) };
     if (kind === 'terceros') return { kind: 'terceros' as const, ...parseTercerosCsv(rawText) };
+    if (kind === 'puc') return { kind: 'puc' as const, ...parsePucCsv(rawText) };
     return { kind: 'saldos' as const, ...parseSaldosInicialesCsv(rawText) };
   }, [kind, rawText]);
 
@@ -220,6 +230,44 @@ export function ImportarCsvModal({
           tone: fallidas > 0 && creadas === 0 ? 'error' : 'ok',
           title: 'Importación de unidades completada',
           msg: `${creadas} unidad(es) · ${propCreados} propietario(s) nuevos · ${omitidas} omitida(s)${fallidas > 0 ? ` · ${fallidas} error(es)` : ''}`,
+        });
+        setRawText('');
+        onClose();
+        return;
+      }
+
+      if (parsed.kind === 'puc') {
+        const existentes = new Set(CUENTAS.map((c) => c.codigo.trim()));
+        let creadas = 0;
+        let omitidas = 0;
+        let fallidas = 0;
+        for (let i = 0; i < parsed.rows.length; i++) {
+          const row = parsed.rows[i];
+          setProgreso(`Importando cuenta ${i + 1} de ${parsed.rows.length} (${row.codigo})…`);
+          if (existentes.has(row.codigo)) {
+            omitidas += 1;
+            continue;
+          }
+          const res = await acciones.crearCuentaPuc({
+            codigo: row.codigo,
+            nombre: row.nombre,
+            tipo: row.tipo,
+            naturaleza: row.naturaleza,
+            requiereTercero: row.requiereTercero,
+            requiereUnidad: row.requiereUnidad,
+            nota: row.nota,
+          });
+          if (res.ok) {
+            existentes.add(row.codigo);
+            creadas += 1;
+          } else {
+            fallidas += 1;
+          }
+        }
+        toast({
+          tone: fallidas > 0 && creadas === 0 ? 'error' : 'ok',
+          title: 'Importación de PUC completada',
+          msg: `${creadas} cuenta(s) creada(s) · ${omitidas} ya existía(n)${fallidas > 0 ? ` · ${fallidas} error(es)` : ''}`,
         });
         setRawText('');
         onClose();
@@ -423,6 +471,13 @@ export function ImportarCsvModal({
                         <th>Documento</th>
                         <th className="num">RF / ICA / IVA</th>
                       </tr>
+                    ) : parsed.kind === 'puc' ? (
+                      <tr>
+                        <th>Código</th>
+                        <th>Nombre de cuenta</th>
+                        <th>Tipo</th>
+                        <th>Nat.</th>
+                      </tr>
                     ) : (
                       <tr>
                         <th>Cuenta</th>
@@ -433,6 +488,15 @@ export function ImportarCsvModal({
                     )}
                   </thead>
                   <tbody>
+                    {parsed.kind === 'puc' &&
+                      parsed.rows.slice(0, 15).map((r, i) => (
+                        <tr key={i}>
+                          <td className="mono">{r.codigo}</td>
+                          <td>{r.nombre}</td>
+                          <td>{r.tipo}</td>
+                          <td className="mono">{r.naturaleza}</td>
+                        </tr>
+                      ))}
                     {parsed.kind === 'unidades' &&
                       parsed.rows.slice(0, 12).map((r, i) => (
                         <tr key={i}>
