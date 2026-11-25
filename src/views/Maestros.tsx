@@ -5,6 +5,7 @@ import type { CuentaPuc, RolTercero, Tercero, Unidad } from '../domain/types';
 import { acciones, DATOS, tercerosDe, tienePermiso, unidadesDe, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Card, Modal, Toggle, ViewHeader } from '../components/ui';
+import { ImportarCsvModal } from '../components/ImportarCsvModal';
 
 type Tab = 'puc' | 'unidades' | 'terceros';
 
@@ -70,6 +71,7 @@ export function Maestros(props: VistaProps) {
 
   const [modalTercero, setModalTercero] = useState(false);
   const [modalCopiarTerceros, setModalCopiarTerceros] = useState(false);
+  const [importCsvKind, setImportCsvKind] = useState<'unidades' | 'terceros' | null>(null);
   const [origenCopiaId, setOrigenCopiaId] = useState('');
   const [copiandoTerceros, setCopiandoTerceros] = useState(false);
   const otrasCopropiedades = DATOS.companies.filter((c) => c.id !== empresa.id);
@@ -335,12 +337,20 @@ export function Maestros(props: VistaProps) {
               </Btn>
             )}
             {tab === 'unidades' && puedeEditarMaestros && (
-              <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaUnidad}>
-                Nueva unidad
-              </Btn>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('unidades')}>
+                  Importar CSV
+                </Btn>
+                <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaUnidad}>
+                  Nueva unidad
+                </Btn>
+              </div>
             )}
             {tab === 'terceros' && puedeEditarMaestros && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('terceros')}>
+                  Importar CSV
+                </Btn>
                 {otrasCopropiedades.length > 0 && (
                   <Btn
                     variant="outline"
@@ -1026,6 +1036,17 @@ export function Maestros(props: VistaProps) {
           </div>
         </form>
       </Modal>
+
+      {importCsvKind && (
+        <ImportarCsvModal
+          open={true}
+          kind={importCsvKind}
+          empresa={empresa}
+          estado={estado}
+          onClose={() => setImportCsvKind(null)}
+          toast={toast}
+        />
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { acciones, DATOS, esPeriodoBloqueado, rubrosDe, tienePermiso, unidadesDe
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Empty, ViewHeader } from '../components/ui';
 import { DetalleComprobante } from '../components/DetalleComprobante';
+import { ImportarCsvModal } from '../components/ImportarCsvModal';
 import { NuevoComprobanteModal } from '../components/NuevoComprobanteModal';
 
 const TIPOS: Array<TipoComprobante | 'TODOS'> = ['TODOS', 'CC', 'RC', 'CE', 'NC', 'DS'];
@@ -14,6 +15,7 @@ export function Comprobantes(props: VistaProps) {
   const auth = useAuth();
   const [tipo, setTipo] = useState<TipoComprobante | 'TODOS'>('TODOS');
   const [q, setQ] = useState('');
+  const [saldosOpen, setSaldosOpen] = useState(false);
   const [detalleSeleccionado, setDetalleSeleccionado] = useState<Comprobante | null>(null);
   const [nuevoOpen, setNuevoOpen] = useState(false);
 
@@ -79,6 +81,16 @@ export function Comprobantes(props: VistaProps) {
         subtitle={`${empresa.nombreCorto} · ${lista.length} documentos · ${fmtMoney(total)}`}
         actions={
           <>
+            <Btn
+              size="sm"
+              variant="outline"
+              icon="layers"
+              onClick={() => setSaldosOpen(true)}
+              disabled={bloqueado || !puedeContabilizar}
+              title="Importar balance de apertura / saldos iniciales desde Excel/CSV"
+            >
+              Saldos iniciales CSV
+            </Btn>
             <Btn
               size="sm"
               variant="primary"
@@ -179,6 +191,15 @@ export function Comprobantes(props: VistaProps) {
         unidades={unidadesDe(estado)}
         rubros={rubrosDe(estado)}
         onClose={() => setNuevoOpen(false)}
+        toast={toast}
+      />
+
+      <ImportarCsvModal
+        open={saldosOpen}
+        kind="saldos"
+        empresa={empresa}
+        estado={estado}
+        onClose={() => setSaldosOpen(false)}
         toast={toast}
       />
     </div>
