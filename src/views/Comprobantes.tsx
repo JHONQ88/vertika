@@ -87,9 +87,9 @@ export function Comprobantes(props: VistaProps) {
               icon="layers"
               onClick={() => setSaldosOpen(true)}
               disabled={bloqueado || !puedeContabilizar}
-              title="Importar balance de apertura / saldos iniciales desde Excel/CSV"
+              title="Importar balance de apertura / saldos iniciales desde Excel (.xlsx) o CSV"
             >
-              Saldos iniciales CSV
+              Saldos iniciales Excel/CSV
             </Btn>
             <Btn
               size="sm"

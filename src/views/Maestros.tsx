@@ -334,7 +334,7 @@ export function Maestros(props: VistaProps) {
             {tab === 'puc' && puedeCrearPuc && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('puc')}>
-                  Importar PUC CSV
+                  Importar PUC Excel/CSV
                 </Btn>
                 <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaCuenta}>
                   Nueva cuenta
@@ -344,7 +344,7 @@ export function Maestros(props: VistaProps) {
             {tab === 'unidades' && puedeEditarMaestros && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('unidades')}>
-                  Importar CSV
+                  Importar Excel/CSV
                 </Btn>
                 <Btn variant="primary" size="sm" icon="plus" onClick={abrirNuevaUnidad}>
                   Nueva unidad
@@ -354,7 +354,7 @@ export function Maestros(props: VistaProps) {
             {tab === 'terceros' && puedeEditarMaestros && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Btn variant="outline" size="sm" icon="download" onClick={() => setImportCsvKind('terceros')}>
-                  Importar CSV
+                  Importar Excel/CSV
                 </Btn>
                 {otrasCopropiedades.length > 0 && (
                   <Btn

@@ -92,6 +92,32 @@ export function ImportarCsvModal({
 
   const onFile = async (file: File | null) => {
     if (!file) return;
+    if (file.name.toLowerCase().endsWith('.xlsx')) {
+      try {
+        const { readSheet } = await import('read-excel-file/browser');
+        const rows = await readSheet(file);
+        const lines = rows.map((row) =>
+          row
+            .map((cell) => {
+              if (cell === null || cell === undefined) return '';
+              if (cell instanceof Date) return cell.toISOString().slice(0, 10);
+              const str = String(cell).replace(/\r?\n/g, ' ').trim();
+              return str.includes(';') || str.includes('"')
+                ? `"${str.replace(/"/g, '""')}"`
+                : str;
+            })
+            .join(';'),
+        );
+        setRawText(lines.join('\r\n'));
+      } catch (e: unknown) {
+        toast({
+          tone: 'error',
+          title: 'No se pudo leer el archivo Excel',
+          msg: e instanceof Error ? e.message : 'Verifica que sea un archivo .xlsx válido.',
+        });
+      }
+      return;
+    }
     const text = await file.text();
     setRawText(text);
   };
@@ -353,7 +379,7 @@ export function ImportarCsvModal({
           }}
         >
           <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
-            Compatible con <strong>Excel en español (;)</strong>, CSV (,) o pegar directo desde Excel.
+            Sube un archivo <strong>Excel (.xlsx)</strong>, <strong>CSV (;/,)</strong> o pega directo desde Excel.
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Btn
@@ -363,13 +389,13 @@ export function ImportarCsvModal({
               type="button"
               onClick={() => descargarPlantillaCsv(cfg.filename, cfg.plantilla)}
             >
-              Descargar plantilla CSV
+              Descargar plantilla
             </Btn>
             <label className="btn btn-xs btn-primary" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <span>Seleccionar archivo .csv</span>
+              <span>Subir .xlsx o .csv</span>
               <input
                 type="file"
-                accept=".csv,.txt"
+                accept=".xlsx,.csv,.txt"
                 style={{ display: 'none' }}
                 onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
               />
