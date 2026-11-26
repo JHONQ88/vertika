@@ -545,9 +545,8 @@ export async function updateRubroBudgetApi(
   );
 }
 
-export async function updateCompanySettingsApi(
-  companyId: string,
-  patch: Partial<
+export interface UpdateCompanySettingsPayload
+  extends Partial<
     Pick<
       Copropiedad,
       | 'razonSocial'
@@ -557,11 +556,147 @@ export async function updateCompanySettingsApi(
       | 'diaCorteProntoPago'
       | 'descuentoProntoPagoPct'
       | 'llaveBreB'
+      | 'wompiPublicKey'
+      | 'wompiSandbox'
     >
-  >,
+  > {
+  wompiIntegritySecret?: string;
+  wompiEventsSecret?: string;
+}
+
+export async function updateCompanySettingsApi(
+  companyId: string,
+  patch: UpdateCompanySettingsPayload,
 ): Promise<Copropiedad> {
   return request<Copropiedad>(`/api/v1/companies/${encodeURIComponent(companyId)}/settings`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+}
+
+export interface PortalUnitLinkItem {
+  unitId: string;
+  torre: string;
+  numero: string;
+  propietarioNombre: string;
+  propietarioEmail: string;
+  propietarioTelefono: string;
+  arrendatarioNombre?: string | null;
+  arrendatarioEmail?: string | null;
+  arrendatarioTelefono?: string | null;
+  token: string;
+}
+
+export interface PortalMovimientoItem {
+  fecha: string;
+  periodo: string;
+  comprobante: string;
+  tipo: string;
+  descripcion: string;
+  cargo: number;
+  abono: number;
+}
+
+export interface PortalIntencionPagoItem {
+  id: string;
+  referencia: string;
+  periodo: string;
+  montoTotal: number;
+  estado: string;
+  pasarela: string;
+  pasarelaTxId?: string | null;
+  createdAt: string;
+  paidAt?: string | null;
+}
+
+export interface PortalUnitStatement {
+  companyId: string;
+  razonSocial: string;
+  nombreCorto: string;
+  nit: string;
+  ciudad: string;
+  direccion: string;
+  periodoActual: string;
+  llaveBreB: string;
+  tasaMoraMensual: number;
+  diaCorteProntoPago: number;
+  descuentoProntoPagoPct: number;
+  wompiPublicKey: string;
+  wompiSandbox: boolean;
+  wompiConfigurado: boolean;
+  unitId: string;
+  torre: string;
+  numero: string;
+  tipoUnidad: string;
+  coeficiente: number;
+  matricula: string;
+  carteraCongelada: boolean;
+  propietarioNombre: string;
+  propietarioDocumento: string;
+  propietarioEmail: string;
+  arrendatarioNombre?: string | null;
+  cuotaMensual: number;
+  cargadoTotal: number;
+  pagadoTotal: number;
+  saldoActual: number;
+  descuentoProntoPago: number;
+  totalConDescuento: number;
+  estadoCartera: string;
+  movimientos: PortalMovimientoItem[];
+  intenciones: PortalIntencionPagoItem[];
+}
+
+export interface PortalCheckoutResponse {
+  referencia: string;
+  montoTotal: number;
+  montoEnCentavos: number;
+  moneda: string;
+  wompiPublicKey: string;
+  wompiSandbox: boolean;
+  signatureIntegrity: string;
+  checkoutUrl: string;
+  sandboxSimulable: boolean;
+}
+
+export async function fetchPortalLinksApi(companyId: string): Promise<PortalUnitLinkItem[]> {
+  const res = await request<{ links: PortalUnitLinkItem[] }>(
+    `/api/v1/companies/${encodeURIComponent(companyId)}/portal-links`,
+  );
+  return res.links ?? [];
+}
+
+export async function portalLookupApi(payload: {
+  companySlug: string;
+  unidad: string;
+  documento: string;
+  matriculaUltimos4?: string;
+}): Promise<{ token: string }> {
+  return request<{ token: string }>('/api/v1/portal/lookup', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchPortalStatementApi(token: string): Promise<PortalUnitStatement> {
+  return request<PortalUnitStatement>(`/api/v1/portal/unit/${encodeURIComponent(token)}`);
+}
+
+export async function portalCreateCheckoutApi(
+  token: string,
+  payload: { monto?: number; aplicarDescuento?: boolean; redirectUrl?: string },
+): Promise<PortalCheckoutResponse> {
+  return request<PortalCheckoutResponse>(
+    `/api/v1/portal/unit/${encodeURIComponent(token)}/checkout`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function portalSimulatePaymentApi(
+  token: string,
+  payload: { referencia: string; montoEnCentavos: number },
+): Promise<{ ok: boolean; idempotent?: boolean; referencia: string }> {
+  return request<{ ok: boolean; idempotent?: boolean; referencia: string }>(
+    `/api/v1/portal/unit/${encodeURIComponent(token)}/simulate-payment`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
 }

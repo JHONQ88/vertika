@@ -38,6 +38,12 @@ pub struct FrontendCopropiedad {
     pub saldos_iniciales: HashMap<String, Decimal>,
     pub escala: Decimal,
     pub color: String,
+    #[serde(default, rename = "wompiPublicKey")]
+    pub wompi_public_key: String,
+    #[serde(default = "default_true", rename = "wompiSandbox")]
+    pub wompi_sandbox: bool,
+    #[serde(default, rename = "wompiConfigurado")]
+    pub wompi_configurado: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -473,6 +479,14 @@ pub struct UpdateCompanySettingsRequest {
     pub descuento_pronto_pago_pct: Option<Decimal>,
     #[serde(rename = "llaveBreB", alias = "llave_bre_b", default)]
     pub llave_bre_b: Option<String>,
+    #[serde(rename = "wompiPublicKey", alias = "wompi_public_key", default)]
+    pub wompi_public_key: Option<String>,
+    #[serde(rename = "wompiIntegritySecret", alias = "wompi_integrity_secret", default)]
+    pub wompi_integrity_secret: Option<String>,
+    #[serde(rename = "wompiEventsSecret", alias = "wompi_events_secret", default)]
+    pub wompi_events_secret: Option<String>,
+    #[serde(rename = "wompiSandbox", alias = "wompi_sandbox", default)]
+    pub wompi_sandbox: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,4 +537,126 @@ pub struct CopyThirdPartiesResult {
     pub copiados: usize,
     pub omitidos: usize,
     pub terceros: Vec<FrontendTercero>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalUnitLinkItem {
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub propietario_nombre: String,
+    pub propietario_email: String,
+    pub propietario_telefono: String,
+    pub arrendatario_nombre: Option<String>,
+    pub arrendatario_email: Option<String>,
+    pub arrendatario_telefono: Option<String>,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalLookupRequest {
+    #[serde(alias = "company_slug")]
+    pub company_slug: String,
+    pub unidad: String,
+    pub documento: String,
+    #[serde(default, alias = "matricula_ultimos4")]
+    pub matricula_ultimos4: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalLookupResponse {
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalMovimientoItem {
+    pub fecha: String,
+    pub periodo: String,
+    pub comprobante: String,
+    pub tipo: String,
+    pub descripcion: String,
+    pub cargo: Decimal,
+    pub abono: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalIntencionPagoItem {
+    pub id: String,
+    pub referencia: String,
+    pub periodo: String,
+    pub monto_total: Decimal,
+    pub estado: String,
+    pub pasarela: String,
+    pub pasarela_tx_id: Option<String>,
+    pub created_at: String,
+    pub paid_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalUnitStatement {
+    pub company_id: String,
+    pub razon_social: String,
+    pub nombre_corto: String,
+    pub nit: String,
+    pub ciudad: String,
+    pub direccion: String,
+    pub periodo_actual: String,
+    pub llave_bre_b: String,
+    pub tasa_mora_mensual: Decimal,
+    pub dia_corte_pronto_pago: i16,
+    pub descuento_pronto_pago_pct: Decimal,
+    pub wompi_public_key: String,
+    pub wompi_sandbox: bool,
+    pub wompi_configurado: bool,
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub tipo_unidad: String,
+    pub coeficiente: Decimal,
+    pub matricula: String,
+    pub cartera_congelada: bool,
+    pub propietario_nombre: String,
+    pub propietario_documento: String,
+    pub propietario_email: String,
+    pub arrendatario_nombre: Option<String>,
+    pub cuota_mensual: Decimal,
+    pub cargado_total: Decimal,
+    pub pagado_total: Decimal,
+    pub saldo_actual: Decimal,
+    pub descuento_pronto_pago: Decimal,
+    pub total_con_descuento: Decimal,
+    pub estado_cartera: String,
+    pub movimientos: Vec<PortalMovimientoItem>,
+    pub intenciones: Vec<PortalIntencionPagoItem>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalCheckoutRequest {
+    #[serde(default)]
+    pub monto: Option<Decimal>,
+    #[serde(default, alias = "aplicar_descuento")]
+    pub aplicar_descuento: Option<bool>,
+    #[serde(default, alias = "redirect_url")]
+    pub redirect_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalCheckoutResponse {
+    pub referencia: String,
+    pub monto_total: Decimal,
+    pub monto_en_centavos: i64,
+    pub moneda: String,
+    pub wompi_public_key: String,
+    pub wompi_sandbox: bool,
+    pub signature_integrity: String,
+    pub checkout_url: String,
+    pub sandbox_simulable: bool,
 }

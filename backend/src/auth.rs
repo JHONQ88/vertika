@@ -4,7 +4,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::fmt::Write;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -590,6 +590,59 @@ pub fn verify_token(token: &str) -> Result<AuthUser, ApiError> {
         plan_nombre: claims.plan_nombre,
         expires_at: claims.expires_at,
     })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortalTokenPayload {
+    pub company_id: String,
+    pub unit_id: String,
+}
+
+pub fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    to_hex(&hasher.finalize())
+}
+
+pub fn issue_portal_token(company_id: &str, unit_id: &str) -> Result<String, ApiError> {
+    let payload = PortalTokenPayload {
+        company_id: company_id.trim().to_string(),
+        unit_id: unit_id.trim().to_string(),
+    };
+    let payload_json = serde_json::to_vec(&payload)
+        .map_err(|e| ApiError::Internal(format!("No se pudo serializar token portal: {e}")))?;
+    let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json);
+    let signing_input = format!("ptk1.{payload_b64}");
+
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(auth_secret().as_bytes())
+        .map_err(|_| ApiError::Internal("Secreto JWT inválido".into()))?;
+    mac.update(signing_input.as_bytes());
+    let sig_b64 = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+
+    Ok(format!("{payload_b64}.{sig_b64}"))
+}
+
+pub fn verify_portal_token(token: &str) -> Result<PortalTokenPayload, ApiError> {
+    let parts: Vec<&str> = token.trim().split('.').collect();
+    if parts.len() != 2 {
+        return Err(ApiError::Unauthorized("Enlace de pago inválido o malformado.".into()));
+    }
+    let signing_input = format!("ptk1.{}", parts[0]);
+    let sig_bytes = URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .map_err(|_| ApiError::Unauthorized("Firma del enlace de pago inválida.".into()))?;
+
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(auth_secret().as_bytes())
+        .map_err(|_| ApiError::Internal("Secreto JWT inválido".into()))?;
+    mac.update(signing_input.as_bytes());
+    mac.verify_slice(&sig_bytes)
+        .map_err(|_| ApiError::Unauthorized("Enlace de pago adulterado o inválido.".into()))?;
+
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(parts[0])
+        .map_err(|_| ApiError::Unauthorized("Payload del enlace de pago inválido.".into()))?;
+    serde_json::from_slice(&payload_bytes)
+        .map_err(|_| ApiError::Unauthorized("Datos del enlace de pago inválidos.".into()))
 }
 
 pub fn extract_auth(headers: &HeaderMap, auth_required: bool) -> Result<AuthContext, ApiError> {

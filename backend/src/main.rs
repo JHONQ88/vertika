@@ -20,7 +20,8 @@ use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
     BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CopyThirdPartiesRequest,
-    CreateCompanyRequest, CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest, Health, LedgerAccount,
+    CreateCompanyRequest, CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest,
+    Health, LedgerAccount, PortalCheckoutRequest, PortalLookupRequest,
     UpdateCompanySettingsRequest, UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest,
     UpsertThirdPartyRequest, UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
@@ -217,6 +218,22 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/companies/:company_id/settings",
             patch(update_company_settings),
         )
+        .route(
+            "/api/v1/companies/:company_id/portal-links",
+            get(company_portal_links),
+        )
+        // Portal público de propietarios/inquilinos y Webhook Wompi
+        .route("/api/v1/portal/lookup", post(portal_lookup))
+        .route("/api/v1/portal/unit/:token", get(portal_unit_statement))
+        .route(
+            "/api/v1/portal/unit/:token/checkout",
+            post(portal_unit_checkout),
+        )
+        .route(
+            "/api/v1/portal/unit/:token/simulate-payment",
+            post(portal_simulate_payment),
+        )
+        .route("/api/v1/webhooks/wompi", post(wompi_webhook))
         .with_state(state)
         .layer(middleware::from_fn(security_headers_middleware))
         .layer(build_cors_layer())
@@ -935,6 +952,171 @@ async fn update_company_settings(
         .update_company_settings(&company_id, req, &ctx.actor_label())
         .await?;
     Ok(Json(serde_json::to_value(company).unwrap_or_else(|_| json!({}))))
+}
+
+async fn company_portal_links(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let links = state.store.list_portal_links(&company_id).await?;
+    Ok(Json(json!({ "links": links })))
+}
+
+async fn portal_lookup(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<PortalLookupRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let rate_key_ident = format!("portal:{}:{}", req.company_slug.trim(), req.unidad.trim());
+    let (ip_key, email_key) = auth::login_rate_keys(&headers, &rate_key_ident);
+    state.login_limiter.check(&ip_key, &email_key)?;
+    match state.store.portal_lookup(req).await {
+        Ok(res) => {
+            state.login_limiter.clear(&ip_key, &email_key);
+            Ok(Json(serde_json::to_value(res).unwrap_or_else(|_| json!({}))))
+        }
+        Err(e) => {
+            state.login_limiter.record_failure(&ip_key, &email_key);
+            Err(e)
+        }
+    }
+}
+
+async fn portal_unit_statement(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let stmt = state.store.portal_statement(&token).await?;
+    Ok(Json(serde_json::to_value(stmt).unwrap_or_else(|_| json!({}))))
+}
+
+async fn portal_unit_checkout(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(req): Json<PortalCheckoutRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let checkout = state.store.portal_create_checkout(&token, req).await?;
+    Ok(Json(serde_json::to_value(checkout).unwrap_or_else(|_| json!({}))))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimulatePaymentRequest {
+    referencia: String,
+    #[serde(default, alias = "monto_en_centavos")]
+    monto_en_centavos: i64,
+}
+
+async fn portal_simulate_payment(
+    State(state): State<Arc<AppState>>,
+    Path(token): Path<String>,
+    Json(req): Json<SimulatePaymentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let payload = auth::verify_portal_token(&token)?;
+    let prefix = format!("VTK-{}-", payload.company_id.to_uppercase());
+    if !req.referencia.trim().to_uppercase().starts_with(&prefix) {
+        return Err(ApiError::Forbidden(
+            "La referencia no pertenece a esta copropiedad.".into(),
+        ));
+    }
+    let res = state
+        .store
+        .apply_approved_payment(
+            &req.referencia,
+            &format!("SIM-{}", uuid::Uuid::new_v4().simple()),
+            req.monto_en_centavos,
+            None,
+            true,
+        )
+        .await?;
+    Ok(Json(res))
+}
+
+async fn wompi_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let event = body
+        .get("event")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if event != "transaction.updated" {
+        return Ok(Json(json!({ "ok": true, "ignored": event })));
+    }
+    let data = body.get("data").cloned().unwrap_or(Value::Null);
+    let (status, reference, tx_id, amount_in_cents) = {
+        let tx_obj = data
+            .get("transaction")
+            .ok_or_else(|| ApiError::BadRequest("Payload Wompi sin data.transaction.".into()))?;
+        (
+            tx_obj
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            tx_obj
+                .get("reference")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            tx_obj
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            tx_obj
+                .get("amount_in_cents")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+        )
+    };
+
+    if status != "APPROVED" {
+        return Ok(Json(json!({ "ok": true, "status": status, "referencia": reference })));
+    }
+
+    let props: Vec<String> = body
+        .get("signature")
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let checksum = headers
+        .get("x-event-checksum")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| {
+            body.get("signature")
+                .and_then(|s| s.get("checksum"))
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let timestamp = body
+        .get("timestamp")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let res = state
+        .store
+        .apply_approved_payment(
+            &reference,
+            &tx_id,
+            amount_in_cents,
+            Some((props, timestamp, checksum, data)),
+            false,
+        )
+        .await?;
+    Ok(Json(res))
 }
 
 #[cfg(test)]
@@ -2739,5 +2921,255 @@ mod tests {
         let ov_body = json_body(ov).await;
         assert!(ov_body["totalContadores"].as_u64().unwrap() >= 2);
         assert!(ov_body["cuentasSuspendidasOVencidas"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn portal_links_lookup_checkout_wompi_webhook_and_idempotency_work() {
+        let router = app();
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+
+        // 1. Configure Wompi Sandbox keys on Altavista
+        let cfg_res = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "wompiPublicKey": "pub_test_vertika_demo",
+                            "wompiIntegritySecret": "test_integrity_secret_123",
+                            "wompiEventsSecret": "test_events_secret_456",
+                            "wompiSandbox": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg_res.status(), StatusCode::OK);
+        let cfg_body = json_body(cfg_res).await;
+        assert_eq!(cfg_body["wompiConfigurado"], true);
+
+        // 2. Fetch signed portal links for Altavista
+        let links_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/altavista/portal-links")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(links_res.status(), StatusCode::OK);
+        let links_body = json_body(links_res).await;
+        let links = links_body["links"].as_array().unwrap();
+        assert!(!links.is_empty());
+
+        // Pick a unit that has saldoActual > 0
+        let mut chosen_token = String::new();
+        let mut chosen_torre = String::new();
+        let mut chosen_num = String::new();
+        let mut chosen_doc = String::new();
+        let mut chosen_saldo = 0.0_f64;
+
+        for item in links {
+            let tok = item["token"].as_str().unwrap();
+            let st_res = router
+                .clone()
+                .oneshot(
+                    Request::get(format!("/api/v1/portal/unit/{tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(st_res.status(), StatusCode::OK);
+            let st_body = json_body(st_res).await;
+            let saldo = st_body["saldoActual"].as_f64().unwrap_or(0.0);
+            if saldo > 0.0 {
+                chosen_token = tok.to_string();
+                chosen_torre = st_body["torre"].as_str().unwrap().to_string();
+                chosen_num = st_body["numero"].as_str().unwrap().to_string();
+                chosen_doc = st_body["propietarioDocumento"].as_str().unwrap().to_string();
+                chosen_saldo = saldo;
+                break;
+            }
+        }
+        assert!(chosen_saldo > 0.0, "Debe existir al menos una unidad con saldo en Altavista");
+
+        // 3. Public lookup succeeds with valid unit + document and fails on wrong document
+        let bad_lookup = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/portal/lookup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "companySlug": "altavista",
+                            "unidad": format!("{chosen_torre}{chosen_num}"),
+                            "documento": "9999999999"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_lookup.status(), StatusCode::UNAUTHORIZED);
+
+        let good_lookup = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/portal/lookup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "companySlug": "altavista",
+                            "unidad": format!("{chosen_torre}-{chosen_num}"),
+                            "documento": chosen_doc
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(good_lookup.status(), StatusCode::OK);
+        let lookup_token = json_body(good_lookup).await["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(lookup_token, chosen_token);
+
+        // 4. Create checkout intention (without pronto pago discount so full saldo reaches $0)
+        let chk_res = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/portal/unit/{chosen_token}/checkout"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "aplicarDescuento": false,
+                            "redirectUrl": "https://vertika-lac.vercel.app/pagar/ok"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chk_res.status(), StatusCode::OK);
+        let chk_body = json_body(chk_res).await;
+        let referencia = chk_body["referencia"].as_str().unwrap().to_string();
+        let cents = chk_body["montoEnCentavos"].as_i64().unwrap();
+        assert!(cents > 0);
+        assert!(chk_body["checkoutUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://checkout.wompi.co/p/"));
+        assert!(!chk_body["signatureIntegrity"].as_str().unwrap().is_empty());
+
+        // 5. Wompi webhook with invalid checksum -> 401
+        let ts = 1700000000_i64;
+        let bad_wh = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/webhooks/wompi")
+                    .header("content-type", "application/json")
+                    .header("x-event-checksum", "deadbeef")
+                    .body(Body::from(
+                        json!({
+                            "event": "transaction.updated",
+                            "timestamp": ts,
+                            "data": {
+                                "transaction": {
+                                    "id": "tx-wompi-001",
+                                    "reference": referencia,
+                                    "status": "APPROVED",
+                                    "amount_in_cents": cents
+                                }
+                            },
+                            "signature": {
+                                "properties": ["transaction.id", "transaction.status", "transaction.amount_in_cents"],
+                                "checksum": "deadbeef"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_wh.status(), StatusCode::UNAUTHORIZED);
+
+        // 6. Wompi webhook with valid SHA-256 checksum -> 200 & auto RC
+        let valid_checksum = auth::sha256_hex(&format!(
+            "tx-wompi-001APPROVED{cents}{ts}test_events_secret_456"
+        ));
+        let wh_payload = json!({
+            "event": "transaction.updated",
+            "timestamp": ts,
+            "data": {
+                "transaction": {
+                    "id": "tx-wompi-001",
+                    "reference": referencia,
+                    "status": "APPROVED",
+                    "amount_in_cents": cents
+                }
+            },
+            "signature": {
+                "properties": ["transaction.id", "transaction.status", "transaction.amount_in_cents"],
+                "checksum": valid_checksum
+            }
+        });
+        let good_wh = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/webhooks/wompi")
+                    .header("content-type", "application/json")
+                    .header("x-event-checksum", &valid_checksum)
+                    .body(Body::from(wh_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(good_wh.status(), StatusCode::OK);
+        let good_wh_body = json_body(good_wh).await;
+        assert_eq!(good_wh_body["ok"], true);
+        assert_eq!(good_wh_body["idempotent"], false);
+        assert_eq!(good_wh_body["comprobante"]["tipo"], "RC");
+
+        // 7. Statement now shows saldoActual == 0
+        let after_res = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/portal/unit/{chosen_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_res.status(), StatusCode::OK);
+        let after_body = json_body(after_res).await;
+        assert_eq!(after_body["saldoActual"].as_f64().unwrap(), 0.0);
+
+        // 8. Replay same webhook -> idempotent (no duplicate RC)
+        let replay_wh = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/webhooks/wompi")
+                    .header("content-type", "application/json")
+                    .header("x-event-checksum", &valid_checksum)
+                    .body(Body::from(wh_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay_wh.status(), StatusCode::OK);
+        let replay_body = json_body(replay_wh).await;
+        assert_eq!(replay_body["idempotent"], true);
     }
 }

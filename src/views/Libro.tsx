@@ -1,16 +1,32 @@
 import { useMemo, useState } from 'react';
 import type { Comprobante } from '../domain/types';
 import { CUENTA_MAP } from '../domain/puc';
-import { fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
+import { fmtFecha, fmtMoney, fmtPeriodo, hoyISO } from '../domain/format';
 import { filasLibro, saldoCuenta } from '../domain/engine';
-import { DATOS } from '../store';
+import { acciones, DATOS, esPeriodoBloqueado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
-import { Badge, Btn, Chip, Empty, ViewHeader } from '../components/ui';
+import { Badge, Btn, Chip, Empty, Modal, ViewHeader } from '../components/ui';
 import { DetalleComprobante } from '../components/DetalleComprobante';
 
 export function Libro(props: VistaProps) {
-  const { empresa, estado, filtros, setFiltros, modo, toast } = props;
+  const { empresa, estado, filtros, setFiltros, modo, setModo, toast } = props;
+  const auth = useAuth();
   const [detalle, setDetalle] = useState<Comprobante | null>(null);
+  const puedeContabilizar = tienePermiso(auth.user.rol, 'contabilidad');
+  const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
+
+  // Modal Pagar Proveedor (CE 1 clic desde Cuentas por Pagar 220505)
+  const [pagoCxp, setPagoCxp] = useState<{
+    terceroId: string;
+    nombre: string;
+    documento: string;
+    saldo: number;
+  } | null>(null);
+  const [ceValor, setCeValor] = useState('');
+  const [ceBanco, setCeBanco] = useState('111005');
+  const [ceFecha, setCeFecha] = useState(hoyISO());
+  const [ceRef, setCeRef] = useState('');
+  const [ceGuardando, setCeGuardando] = useState(false);
 
   const filas = useMemo(
     () => filasLibro(estado.comprobantes, empresa.id, estado.periodo, filtros),
@@ -37,7 +53,7 @@ export function Libro(props: VistaProps) {
   }, [filas, filtros.cuenta, empresa, estado.comprobantes, estado.periodo]);
 
   const resumen = useMemo(() => {
-    if (modo === 0) return [];
+    if (modo !== 1) return [];
     const mapa = new Map<string, { cuenta: string; nombre: string; debitos: number; creditos: number }>();
     for (const f of filas) {
       const actual = mapa.get(f.cuenta) ?? {
@@ -57,6 +73,98 @@ export function Libro(props: VistaProps) {
       }))
       .sort((a, b) => a.cuenta.localeCompare(b.cuenta));
   }, [modo, filas, estado.comprobantes, empresa, estado.periodo]);
+
+  const cxpProveedores = useMemo(() => {
+    const map = new Map<
+      string,
+      { terceroId: string; nombre: string; documento: string; facturado: number; pagado: number }
+    >();
+    for (const c of estado.comprobantes) {
+      if (c.estado === 'ANULADO' || c.empresaId !== empresa.id || c.periodo > estado.periodo) {
+        continue;
+      }
+      for (const l of c.lineas) {
+        if (l.cuenta !== '220505') continue;
+        const key = l.terceroId || 'SIN_TERCERO';
+        const ter = l.terceroId ? DATOS.terceros.find((t) => t.id === l.terceroId) : undefined;
+        const cur = map.get(key) ?? {
+          terceroId: l.terceroId ?? '',
+          nombre: ter?.nombre ?? 'Proveedor sin asignar',
+          documento: ter?.documento ?? '—',
+          facturado: 0,
+          pagado: 0,
+        };
+        cur.facturado += l.credito;
+        cur.pagado += l.debito;
+        map.set(key, cur);
+      }
+    }
+    return Array.from(map.values())
+      .map((r) => ({ ...r, saldo: r.facturado - r.pagado }))
+      .sort((a, b) => b.saldo - a.saldo || a.nombre.localeCompare(b.nombre));
+  }, [estado.comprobantes, empresa.id, estado.periodo]);
+
+  const abrirPagoCxp = (row: (typeof cxpProveedores)[number]) => {
+    setPagoCxp({
+      terceroId: row.terceroId,
+      nombre: row.nombre,
+      documento: row.documento,
+      saldo: row.saldo,
+    });
+    setCeValor(String(Math.max(0, Math.round(row.saldo))));
+    setCeBanco('111005');
+    setCeFecha(hoyISO());
+    setCeRef('');
+  };
+
+  const asentarPagoCxp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pagoCxp) return;
+    const valor = Math.round(Number(ceValor) || 0);
+    if (valor <= 0) {
+      toast({ tone: 'error', title: 'Valor inválido', msg: 'El valor a pagar debe ser mayor a $ 0.' });
+      return;
+    }
+    setCeGuardando(true);
+    try {
+      const desc = `Pago proveedor ${pagoCxp.nombre}${ceRef.trim() ? ` · ${ceRef.trim()}` : ''}`;
+      const res = await acciones.crearComprobanteManual({
+        companyId: empresa.id,
+        period: estado.periodo,
+        entryType: 'CE',
+        date: ceFecha || hoyISO(),
+        description: desc,
+        reference: ceRef.trim() || undefined,
+        origin: 'CONTADOR_MANUAL',
+        lines: [
+          {
+            id: 'l-1',
+            cuenta: '220505',
+            descripcion: `Cancelación CxP · ${pagoCxp.nombre}`,
+            debito: valor,
+            credito: 0,
+            ...(pagoCxp.terceroId ? { terceroId: pagoCxp.terceroId } : {}),
+          },
+          {
+            id: 'l-2',
+            cuenta: ceBanco,
+            descripcion: `Giro / transferencia a ${pagoCxp.nombre}`,
+            debito: 0,
+            credito: valor,
+            ...(pagoCxp.terceroId ? { terceroId: pagoCxp.terceroId } : {}),
+          },
+        ],
+      });
+      if (res.ok) {
+        toast({ tone: 'ok', title: 'Egreso (CE) asentado', msg: `${res.detalle} · ${fmtMoney(valor)}` });
+        setPagoCxp(null);
+      } else {
+        toast({ tone: 'error', title: 'No se pudo asentar el egreso', msg: res.error });
+      }
+    } finally {
+      setCeGuardando(false);
+    }
+  };
 
   const exportar = () => {
     const encabezado = ['Fecha', 'Periodo', 'Comprobante', 'Cuenta', 'Descripción', 'Tercero', 'Unidad', 'Débito', 'Crédito'];
@@ -112,16 +220,24 @@ export function Libro(props: VistaProps) {
         title="Libro auxiliar"
         subtitle={`${empresa.nombreCorto} · ${fmtPeriodo(estado.periodo)} · ${filas.length} movimientos`}
         actions={
-          <>
-            <Badge tone={modo === 0 ? 'info' : 'neutral'}>{modo === 0 ? 'Vista: detalle' : 'Vista: por cuenta'}</Badge>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Btn size="sm" variant={modo === 0 ? 'primary' : 'outline'} onClick={() => setModo(0)}>
+              Detalle
+            </Btn>
+            <Btn size="sm" variant={modo === 1 ? 'primary' : 'outline'} onClick={() => setModo(1)}>
+              Por cuenta
+            </Btn>
+            <Btn size="sm" variant={modo === 2 ? 'primary' : 'outline'} onClick={() => setModo(2)}>
+              Por pagar (220505)
+            </Btn>
             <Btn size="sm" icon="download" onClick={exportar} disabled={filas.length === 0}>
               Exportar CSV
             </Btn>
-          </>
+          </div>
         }
       />
 
-      {chips.length > 0 && (
+      {chips.length > 0 && modo !== 2 && (
         <div className="chips">
           {chips.map((c) => (
             <Chip key={c.label} label={c.label} onClear={c.clear} />
@@ -132,7 +248,66 @@ export function Libro(props: VistaProps) {
         </div>
       )}
 
-      {filas.length === 0 ? (
+      {modo === 2 ? (
+        cxpProveedores.length === 0 ? (
+          <Empty
+            icon="wallet"
+            title="Sin movimientos en Proveedores (220505)"
+            text="Cuando causes facturas de proveedores aparecerá aquí el saldo exacto por tercero."
+          />
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Proveedor / Tercero</th>
+                  <th>NIT / Documento</th>
+                  <th className="num">Facturado (Crédito)</th>
+                  <th className="num">Pagado (Débito)</th>
+                  <th className="num">Saldo pendiente</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cxpProveedores.map((r) => (
+                  <tr key={`${r.terceroId}-${r.documento}`}>
+                    <td><strong>{r.nombre}</strong></td>
+                    <td className="mono">{r.documento}</td>
+                    <td className="num mono">{fmtMoney(r.facturado)}</td>
+                    <td className="num mono">{fmtMoney(r.pagado)}</td>
+                    <td className={`num mono ${r.saldo > 0 ? 'text-warn' : 'text-ok'}`}>
+                      <strong>{fmtMoney(r.saldo)}</strong>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <Btn
+                          size="xs"
+                          variant="outline"
+                          onClick={() => {
+                            setFiltros({
+                              cuenta: '220505',
+                              terceroId: r.terceroId || undefined,
+                            });
+                            setModo(0);
+                          }}
+                        >
+                          Ver auxiliar
+                        </Btn>
+                        {r.saldo > 0 && puedeContabilizar && !bloqueado && (
+                          <Btn size="xs" variant="primary" onClick={() => abrirPagoCxp(r)}>
+                            Pagar (CE)
+                          </Btn>
+                        )}
+                        {r.saldo <= 0 && <Badge tone="ok">Al día</Badge>}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : filas.length === 0 ? (
         <Empty icon="book" title="Sin movimientos" text="Prueba con otro periodo (F4) o limpia los filtros." />
       ) : modo === 0 ? (
         <div className="table-wrap">
@@ -223,6 +398,63 @@ export function Libro(props: VistaProps) {
         unidades={DATOS.units.filter((u) => u.empresaId === empresa.id)}
         onClose={() => setDetalle(null)}
       />
+
+      <Modal
+        open={Boolean(pagoCxp)}
+        onClose={() => setPagoCxp(null)}
+        title="Pagar a proveedor (Comprobante de Egreso CE)"
+        subtitle={pagoCxp ? `${pagoCxp.nombre} (${pagoCxp.documento}) · Saldo ${fmtMoney(pagoCxp.saldo)}` : ''}
+        width={480}
+      >
+        {pagoCxp && (
+          <form onSubmit={(e) => void asentarPagoCxp(e)} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+              <label className="field">
+                <span>Valor a pagar (COP)</span>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={ceValor}
+                  onChange={(e) => setCeValor(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Fecha del egreso</span>
+                <input
+                  type="date"
+                  required
+                  value={ceFecha}
+                  onChange={(e) => setCeFecha(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="field">
+              <span>Cuenta de salida del dinero</span>
+              <select value={ceBanco} onChange={(e) => setCeBanco(e.target.value)}>
+                <option value="111005">111005 · Bancos cuenta recaudadora</option>
+                <option value="110505">110505 · Caja general</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Referencia / Factura / Transferencia</span>
+              <input
+                value={ceRef}
+                onChange={(e) => setCeRef(e.target.value)}
+                placeholder="Ej. Transferencia Bancolombia FE-151P"
+              />
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Btn type="button" variant="ghost" onClick={() => setPagoCxp(null)}>
+                Cancelar
+              </Btn>
+              <Btn type="submit" variant="primary" disabled={ceGuardando}>
+                {ceGuardando ? 'Asentando…' : 'Asentar Egreso (CE)'}
+              </Btn>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }

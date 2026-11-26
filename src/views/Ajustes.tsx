@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { API_URL } from '../api';
 import { fmtFechaHora, fmtMoney, fmtPeriodo, fmtPct } from '../domain/format';
 import { acciones, exportarEstado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
-import { Badge, Btn, Card, ViewHeader } from '../components/ui';
+import { Badge, Btn, Card, Toggle, ViewHeader } from '../components/ui';
 
 export function Ajustes(props: VistaProps) {
   const { empresa, estado, toast } = props;
@@ -19,9 +20,14 @@ export function Ajustes(props: VistaProps) {
     diaCorteProntoPago: String(empresa.diaCorteProntoPago),
     descuentoProntoPagoPct: String(empresa.descuentoProntoPagoPct),
     llaveBreB: empresa.llaveBreB,
+    wompiPublicKey: empresa.wompiPublicKey ?? '',
+    wompiIntegritySecret: '',
+    wompiEventsSecret: '',
+    wompiSandbox: empresa.wompiSandbox ?? true,
   });
   const editando = editingCompanyId === empresa.id && puedeEditar;
   const auditoriaEmpresa = estado.auditoria.filter((e) => e.empresaId === empresa.id);
+  const webhookUrl = `${(API_URL || 'https://vertika-api.onrender.com').replace(/\/+$/, '')}/api/v1/webhooks/wompi`;
 
   const abrirEdicionEmpresa = () => {
     setFormEmpresa({
@@ -32,6 +38,10 @@ export function Ajustes(props: VistaProps) {
       diaCorteProntoPago: String(empresa.diaCorteProntoPago),
       descuentoProntoPagoPct: String(empresa.descuentoProntoPagoPct),
       llaveBreB: empresa.llaveBreB,
+      wompiPublicKey: empresa.wompiPublicKey ?? '',
+      wompiIntegritySecret: '',
+      wompiEventsSecret: '',
+      wompiSandbox: empresa.wompiSandbox ?? true,
     });
     setEditingCompanyId(empresa.id);
   };
@@ -72,6 +82,10 @@ export function Ajustes(props: VistaProps) {
         diaCorteProntoPago,
         descuentoProntoPagoPct,
         llaveBreB: formEmpresa.llaveBreB.trim(),
+        wompiPublicKey: formEmpresa.wompiPublicKey.trim(),
+        wompiIntegritySecret: formEmpresa.wompiIntegritySecret.trim() || undefined,
+        wompiEventsSecret: formEmpresa.wompiEventsSecret.trim() || undefined,
+        wompiSandbox: formEmpresa.wompiSandbox,
       });
       if (res.ok) {
         toast({ tone: 'ok', title: 'Parámetros guardados', msg: res.detalle });
@@ -116,7 +130,13 @@ export function Ajustes(props: VistaProps) {
     { label: 'Día de corte pronto pago', valor: empresa.diaCorteProntoPago },
     { label: 'Descuento pronto pago', valor: fmtPct(empresa.descuentoProntoPagoPct) },
     { label: 'Fondo de imprevistos', valor: fmtPct(empresa.fondoImprevistosPct) },
-    { label: 'Llave Bre-B', valor: empresa.llaveBreB },
+    { label: 'Llave Bre-B', valor: empresa.llaveBreB || 'Sin configurar' },
+    {
+      label: 'Pasarela Wompi (PSE / Nequi)',
+      valor: empresa.wompiConfigurado
+        ? `${empresa.wompiSandbox ? 'Sandbox' : 'Producción'} · ${empresa.wompiPublicKey}`
+        : 'Modo pruebas / Bre-B',
+    },
     { label: 'Presupuesto anual', valor: fmtMoney(empresa.presupuestoAnual) },
   ];
 
@@ -226,6 +246,64 @@ export function Ajustes(props: VistaProps) {
                     style={{ width: '100%', marginTop: 4 }}
                   />
                 </label>
+                <label className="campo">
+                  <small>Wompi Public Key (pub_test_... / pub_prod_...)</small>
+                  <input
+                    value={formEmpresa.wompiPublicKey}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, wompiPublicKey: e.target.value }))}
+                    placeholder="pub_test_..."
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Wompi Integrity Secret</small>
+                  <input
+                    type="password"
+                    value={formEmpresa.wompiIntegritySecret}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, wompiIntegritySecret: e.target.value }))}
+                    placeholder="Dejar vacío para conservar"
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <label className="campo">
+                  <small>Wompi Events Secret (Webhook)</small>
+                  <input
+                    type="password"
+                    value={formEmpresa.wompiEventsSecret}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, wompiEventsSecret: e.target.value }))}
+                    placeholder="Dejar vacío para conservar"
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+                <div className="campo">
+                  <small>Modo pasarela Wompi</small>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                    <Toggle
+                      checked={formEmpresa.wompiSandbox}
+                      onChange={(v) => setFormEmpresa((prev) => ({ ...prev, wompiSandbox: v }))}
+                    />
+                    <span style={{ fontSize: 12.5 }}>
+                      {formEmpresa.wompiSandbox ? 'Pruebas (Sandbox)' : 'Producción en vivo'}
+                    </span>
+                  </div>
+                </div>
+                <div className="campo" style={{ gridColumn: '1 / -1' }}>
+                  <small>URL de Webhook Wompi (copiar en tu panel Wompi)</small>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <input readOnly value={webhookUrl} className="mono" style={{ flex: 1, fontSize: 12 }} />
+                    <Btn
+                      type="button"
+                      size="xs"
+                      variant="outline"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(webhookUrl);
+                        toast({ tone: 'ok', title: 'Webhook URL copiada' });
+                      }}
+                    >
+                      Copiar
+                    </Btn>
+                  </div>
+                </div>
               </div>
               <div className="cierre-acciones" style={{ marginTop: 14 }}>
                 <Btn size="sm" variant="ghost" type="button" onClick={() => setEditingCompanyId(null)}>

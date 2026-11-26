@@ -10,6 +10,8 @@ export type Origen =
   | 'AGENTE_IA_LIQUIDADOR'
   | 'WEBHOOK_NFC'
   | 'WEBHOOK_BRE_B'
+  | 'PORTAL_WOMPI'
+  | 'IMPORTACION_CSV'
   | 'TESORERIA_PAYOUT'
   | 'CIERRE_AUTOMATICO'
   | 'CONTADOR_MANUAL';
@@ -46,6 +48,9 @@ export interface Copropiedad {
   saldosIniciales: Record<string, number>;
   escala: number;
   color: string;
+  wompiPublicKey?: string;
+  wompiSandbox?: boolean;
+  wompiConfigurado?: boolean;
 }
 
 export interface Unidad {

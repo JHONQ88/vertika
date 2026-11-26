@@ -55,6 +55,7 @@ import {
   type CreateUserPayload,
   type UpsertThirdPartyPayload,
   type UpsertUnitPayload,
+  type UpdateCompanySettingsPayload,
   type UserRole,
 } from './api';
 
@@ -1476,20 +1477,7 @@ export const acciones = {
     return { ok: true, detalle: rubroNom };
   },
 
-  async actualizarParametrosEmpresa(
-    patch: Partial<
-      Pick<
-        Copropiedad,
-        | 'razonSocial'
-        | 'direccion'
-        | 'fondoImprevistosPct'
-        | 'tasaMoraMensual'
-        | 'diaCorteProntoPago'
-        | 'descuentoProntoPagoPct'
-        | 'llaveBreB'
-      >
-    >,
-  ): Promise<Resultado> {
+  async actualizarParametrosEmpresa(patch: UpdateCompanySettingsPayload): Promise<Resultado> {
     if (!tienePermiso(authSession.user.rol, 'maestros')) {
       return { ok: false, error: `El rol ${authSession.user.rol} no puede editar parámetros.` };
     }

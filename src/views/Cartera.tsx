@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
+import { apiEnabled, fetchPortalLinksApi, type PortalUnitLinkItem } from '../api';
 import { cartera } from '../domain/engine';
 import { cuotaMensual } from '../domain/seed';
-import { descargarArchivo, generarPazYSalvoHTML } from '../domain/reports';
-import { fmtCoef, fmtMoney, fmtPeriodo } from '../domain/format';
+import { descargarArchivo, generarCuentaDeCobroHTML, generarPazYSalvoHTML } from '../domain/reports';
+import { fmtCoef, fmtMoney, fmtPeriodo, hoyISO } from '../domain/format';
 import { acciones, DATOS, esPeriodoBloqueado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Chip, Empty, Modal, Stat, Toggle, ViewHeader } from '../components/ui';
@@ -20,6 +21,22 @@ export function Cartera(props: VistaProps) {
 
   const bloqueado = esPeriodoBloqueado(estado, estado.periodo);
   const puedeCausar = tienePermiso(auth.user.rol, 'maestros');
+  const puedeContabilizar = tienePermiso(auth.user.rol, 'contabilidad');
+
+  // Registro rápido de Recibo de Caja (RC)
+  const [rcFila, setRcFila] = useState<(typeof filas)[number] | null>(null);
+  const [rcValor, setRcValor] = useState('');
+  const [rcDescuento, setRcDescuento] = useState('0');
+  const [rcBanco, setRcBanco] = useState('111005');
+  const [rcFecha, setRcFecha] = useState(hoyISO());
+  const [rcRef, setRcRef] = useState('');
+  const [rcGuardando, setRcGuardando] = useState(false);
+
+  // Links personalizados / WhatsApp / Cuenta de cobro
+  const [linksCache, setLinksCache] = useState<Record<string, PortalUnitLinkItem>>({});
+  const [cobroModalFila, setCobroModalFila] = useState<(typeof filas)[number] | null>(null);
+  const [cobroLinkUrl, setCobroLinkUrl] = useState('');
+  const [cargandoLink, setCargandoLink] = useState(false);
 
   const filas = useMemo(
     () => cartera(estado.comprobantes, empresa, DATOS.units.filter((u) => u.empresaId === empresa.id), DATOS.terceros, estado.periodo),
@@ -117,6 +134,166 @@ export function Cartera(props: VistaProps) {
     }
   };
 
+  const copiarEnlacePortalGeneral = () => {
+    const url = `${window.location.origin}/portal/${encodeURIComponent(empresa.id)}`;
+    void navigator.clipboard?.writeText(url);
+    toast({ tone: 'ok', title: 'Enlace del portal copiado', msg: url });
+  };
+
+  const abrirModalRc = (f: (typeof filas)[number]) => {
+    setRcFila(f);
+    setRcValor(String(Math.max(0, Math.round(f.saldo))));
+    setRcDescuento('0');
+    setRcBanco('111005');
+    setRcFecha(hoyISO());
+    setRcRef(`BREB-${f.unidad.torre}-${f.unidad.numero}`);
+  };
+
+  const registrarPagoRc = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rcFila) return;
+    const valor = Math.round(Number(rcValor) || 0);
+    const descuento = Math.max(0, Math.round(Number(rcDescuento) || 0));
+    if (valor <= 0) {
+      toast({ tone: 'error', title: 'Valor inválido', msg: 'El pago debe ser mayor a $ 0.' });
+      return;
+    }
+    const pagadorId = rcFila.arrendatario?.id || rcFila.propietario?.id;
+    const unidadLabel = `${rcFila.unidad.torre} ${rcFila.unidad.numero}`;
+    const lineas = [
+      {
+        id: 'l-1',
+        cuenta: rcBanco,
+        descripcion: `Recaudo expensas ${unidadLabel}${rcRef.trim() ? ` · ${rcRef.trim()}` : ''}`,
+        debito: valor,
+        credito: 0,
+        terceroId: pagadorId,
+        unidadId: rcFila.unidad.id,
+      },
+      ...(descuento > 0
+        ? [
+            {
+              id: 'l-2',
+              cuenta: '417035',
+              descripcion: `Descuento pronto pago ${unidadLabel}`,
+              debito: descuento,
+              credito: 0,
+              terceroId: pagadorId,
+              unidadId: rcFila.unidad.id,
+            },
+          ]
+        : []),
+      {
+        id: descuento > 0 ? 'l-3' : 'l-2',
+        cuenta: '130505',
+        descripcion: `Abono cartera unidad ${unidadLabel}`,
+        debito: 0,
+        credito: valor + descuento,
+        terceroId: pagadorId,
+        unidadId: rcFila.unidad.id,
+      },
+    ];
+
+    setRcGuardando(true);
+    try {
+      const res = await acciones.crearComprobanteManual({
+        companyId: empresa.id,
+        period: estado.periodo,
+        entryType: 'RC',
+        date: rcFecha || hoyISO(),
+        description: `Recaudo expensas ${unidadLabel}`,
+        reference: rcRef.trim() || undefined,
+        origin: 'CONTADOR_MANUAL',
+        lines: lineas,
+      });
+      if (res.ok) {
+        toast({ tone: 'ok', title: 'Recibo de Caja asentado', msg: `${res.detalle} · ${fmtMoney(valor)}` });
+        setRcFila(null);
+      } else {
+        toast({ tone: 'error', title: 'No se pudo registrar pago', msg: res.error });
+      }
+    } finally {
+      setRcGuardando(false);
+    }
+  };
+
+  const abrirModalCobro = async (f: (typeof filas)[number]) => {
+    setCobroModalFila(f);
+    setCobroLinkUrl(`${window.location.origin}/portal/${encodeURIComponent(empresa.id)}`);
+    if (!apiEnabled) return;
+    if (linksCache[f.unidad.id]) {
+      setCobroLinkUrl(`${window.location.origin}/pagar/${encodeURIComponent(linksCache[f.unidad.id].token)}`);
+      return;
+    }
+    setCargandoLink(true);
+    try {
+      const links = await fetchPortalLinksApi(empresa.id);
+      const nextMap: Record<string, PortalUnitLinkItem> = {};
+      for (const item of links) nextMap[item.unitId] = item;
+      setLinksCache(nextMap);
+      const match = nextMap[f.unidad.id];
+      if (match) {
+        setCobroLinkUrl(`${window.location.origin}/pagar/${encodeURIComponent(match.token)}`);
+      }
+    } catch {
+      // Mantiene link general del portal si falla carga individual
+    } finally {
+      setCargandoLink(false);
+    }
+  };
+
+  const descargarCuentaCobroUnidad = (f: (typeof filas)[number], link?: string) => {
+    const movs = estado.comprobantes
+      .filter((c) => c.estado !== 'ANULADO' && c.empresaId === empresa.id)
+      .flatMap((c) => {
+        let cargo = 0;
+        let abono = 0;
+        for (const l of c.lineas) {
+          if (l.unidadId === f.unidad.id && ['130505', '130510', '130515', '130520'].includes(l.cuenta)) {
+            cargo += l.debito;
+            abono += l.credito;
+          }
+        }
+        return cargo > 0 || abono > 0
+          ? [{ fecha: c.fecha, comprobante: `${c.tipo}-${c.consecutivo}`, descripcion: c.descripcion, cargo, abono }]
+          : [];
+      })
+      .sort((a, b) => b.fecha.localeCompare(a.fecha));
+
+    const cuota = cuotaMensual(empresa, f.unidad);
+    const desc =
+      f.saldo > 0 && empresa.descuentoProntoPagoPct > 0
+        ? Math.round((Math.min(cuota, f.saldo) * empresa.descuentoProntoPagoPct) / 100)
+        : 0;
+
+    const html = generarCuentaDeCobroHTML({
+      razonSocial: empresa.razonSocial,
+      nit: empresa.nit,
+      ciudad: empresa.ciudad,
+      direccion: empresa.direccion,
+      periodoActual: estado.periodo,
+      unidadLabel: `${f.unidad.torre} ${f.unidad.numero}`,
+      propietarioNombre: f.propietario?.nombre ?? 'Propietario',
+      propietarioDocumento: f.propietario?.documento ?? '',
+      arrendatarioNombre: f.arrendatario?.nombre ?? null,
+      cuotaMensual: cuota,
+      cargadoTotal: f.cargado,
+      pagadoTotal: f.pagado,
+      saldoActual: f.saldo,
+      descuentoProntoPago: desc,
+      totalConDescuento: Math.max(0, f.saldo - desc),
+      diaCorteProntoPago: empresa.diaCorteProntoPago,
+      llaveBreB: empresa.llaveBreB,
+      linkPago: link,
+      movimientos: movs,
+    });
+    descargarArchivo(
+      `cuenta-cobro-${empresa.id}-${f.unidad.torre}-${f.unidad.numero}-${estado.periodo}.html`,
+      html,
+      'text/html;charset=utf-8',
+    );
+  };
+
   return (
     <div className="vista">
       <ViewHeader
@@ -141,6 +318,9 @@ export function Cartera(props: VistaProps) {
               }
             >
               Causar expensas del mes
+            </Btn>
+            <Btn size="sm" variant="outline" icon="nfc" onClick={copiarEnlacePortalGeneral}>
+              Portal residentes
             </Btn>
             <Btn size="sm" icon="download" onClick={exportar} disabled={filtradas.length === 0}>
               Exportar CSV
@@ -185,7 +365,7 @@ export function Cartera(props: VistaProps) {
                 <th className="num">Saldo</th>
                 <th>Antigüedad</th>
                 <th>Estado</th>
-                <th>Certificado</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -224,13 +404,21 @@ export function Cartera(props: VistaProps) {
                     {f.estado === 'CONGELADA' && <Badge tone="info">Congelada</Badge>}
                   </td>
                   <td>
-                    {f.estado === 'AL_DIA' ? (
-                      <Btn size="xs" icon="download" onClick={() => descargarPazYSalvo(f)}>
-                        Paz y salvo
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <Btn size="xs" variant="outline" onClick={() => void abrirModalCobro(f)}>
+                        Cobro / Link
                       </Btn>
-                    ) : (
-                      '—'
-                    )}
+                      {f.saldo > 0 && puedeContabilizar && !bloqueado && (
+                        <Btn size="xs" variant="primary" onClick={() => abrirModalRc(f)}>
+                          Pagar (RC)
+                        </Btn>
+                      )}
+                      {f.estado === 'AL_DIA' && (
+                        <Btn size="xs" icon="download" onClick={() => descargarPazYSalvo(f)}>
+                          Paz y salvo
+                        </Btn>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -301,6 +489,150 @@ export function Cartera(props: VistaProps) {
             {causando ? 'Causando…' : 'Confirmar causación (CC)'}
           </Btn>
         </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(rcFila)}
+        onClose={() => setRcFila(null)}
+        title="Registrar pago de residente (RC)"
+        subtitle={rcFila ? `${rcFila.unidad.torre} ${rcFila.unidad.numero} · Saldo ${fmtMoney(rcFila.saldo)}` : ''}
+        width={480}
+      >
+        {rcFila && (
+          <form onSubmit={(e) => void registrarPagoRc(e)} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+              <label className="field">
+                <span>Valor recibido (COP)</span>
+                <input
+                  type="number"
+                  min={1}
+                  required
+                  value={rcValor}
+                  onChange={(e) => setRcValor(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Descuento pronto pago</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={rcDescuento}
+                  onChange={(e) => setRcDescuento(e.target.value)}
+                />
+              </label>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+              <label className="field">
+                <span>Cuenta destino</span>
+                <select value={rcBanco} onChange={(e) => setRcBanco(e.target.value)}>
+                  <option value="111005">111005 · Bancos cuenta recaudadora</option>
+                  <option value="110505">110505 · Caja general</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Fecha</span>
+                <input type="date" required value={rcFecha} onChange={(e) => setRcFecha(e.target.value)} />
+              </label>
+            </div>
+            <label className="field">
+              <span>Referencia bancaria / Bre-B</span>
+              <input value={rcRef} onChange={(e) => setRcRef(e.target.value)} placeholder="Transferencia / consignación" />
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Btn type="button" variant="ghost" onClick={() => setRcFila(null)}>
+                Cancelar
+              </Btn>
+              <Btn type="submit" variant="primary" disabled={rcGuardando}>
+                {rcGuardando ? 'Asentando…' : 'Asentar Recibo de Caja (RC)'}
+              </Btn>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(cobroModalFila)}
+        onClose={() => setCobroModalFila(null)}
+        title="Cobro y Link de Pago Personalizado"
+        subtitle={
+          cobroModalFila
+            ? `${cobroModalFila.unidad.torre} ${cobroModalFila.unidad.numero} · ${cobroModalFila.propietario?.nombre ?? ''}`
+            : ''
+        }
+        width={540}
+      >
+        {cobroModalFila && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 6, background: 'var(--bg)' }}>
+              <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>Saldo pendiente</div>
+              <strong className="mono" style={{ fontSize: 18 }}>{fmtMoney(cobroModalFila.saldo)}</strong>
+            </div>
+
+            <label className="field">
+              <span>Enlace personalizado del apartamento {cargandoLink ? '(generando…)' : ''}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input readOnly value={cobroLinkUrl} className="mono" style={{ flex: 1, fontSize: 12 }} />
+                <Btn
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(cobroLinkUrl);
+                    toast({ tone: 'ok', title: 'Link copiado' });
+                  }}
+                >
+                  Copiar
+                </Btn>
+              </div>
+            </label>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Btn
+                type="button"
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  const dest = cobroModalFila.arrendatario ?? cobroModalFila.propietario;
+                  const tel = (dest?.telefono ?? '').replace(/[^0-9]/g, '');
+                  const phone = tel.length === 10 ? `57${tel}` : tel;
+                  const msg = encodeURIComponent(
+                    `Hola ${dest?.nombre ?? ''}, te compartimos tu Cuenta de Cobro de ${empresa.nombreCorto} (Unidad ${cobroModalFila.unidad.torre} ${cobroModalFila.unidad.numero}). Saldo actual: ${fmtMoney(cobroModalFila.saldo)}. Consulta y paga en línea aquí: ${cobroLinkUrl}`,
+                  );
+                  const waUrl = phone ? `https://wa.me/${phone}?text=${msg}` : `https://wa.me/?text=${msg}`;
+                  window.open(waUrl, '_blank', 'noopener');
+                }}
+              >
+                Enviar por WhatsApp
+              </Btn>
+              <Btn
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const dest = cobroModalFila.arrendatario ?? cobroModalFila.propietario;
+                  const subject = encodeURIComponent(
+                    `Cuenta de Cobro ${empresa.nombreCorto} · ${cobroModalFila.unidad.torre} ${cobroModalFila.unidad.numero} (${fmtPeriodo(estado.periodo)})`,
+                  );
+                  const body = encodeURIComponent(
+                    `Cordial saludo ${dest?.nombre ?? ''},\n\nAdjunto enlace personalizado para consultar tu Cuenta de Cobro de ${empresa.nombreCorto} (Unidad ${cobroModalFila.unidad.torre} ${cobroModalFila.unidad.numero}), descargar el estado de cuenta y pagar en línea:\n\nSaldo actual: ${fmtMoney(cobroModalFila.saldo)}\nEnlace de pago: ${cobroLinkUrl}\n${empresa.llaveBreB ? `Llave Bre-B: ${empresa.llaveBreB}\n` : ''}\nAdministración ${empresa.nombreCorto}`,
+                  );
+                  window.location.href = `mailto:${dest?.email ?? ''}?subject=${subject}&body=${body}`;
+                }}
+              >
+                Enviar por correo
+              </Btn>
+              <Btn
+                type="button"
+                size="sm"
+                variant="outline"
+                icon="download"
+                onClick={() => descargarCuentaCobroUnidad(cobroModalFila, cobroLinkUrl)}
+              >
+                Cuenta de cobro PDF
+              </Btn>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

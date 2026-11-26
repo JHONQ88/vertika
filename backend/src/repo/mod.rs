@@ -2,22 +2,23 @@ pub mod memory;
 pub mod postgres;
 
 use crate::auth::{
-    AdminContadorItem, AdminOverviewResponse, AuthUser, CreateContadorRequest, CreateUserRequest,
-    UpdateAdminUserRequest,
+    self, AdminContadorItem, AdminOverviewResponse, AuthUser, CreateContadorRequest,
+    CreateUserRequest, PortalTokenPayload, UpdateAdminUserRequest,
 };
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
     ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
     ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest,
-    CreateCompanyResult, CreateEntryRequest,
-    CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
-    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
-    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
-    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
-    UpsertUnitRequest, VoidEntryResult,
+    CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
+    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
+    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
+    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
+    PortalCheckoutResponse, PortalLookupRequest, PortalLookupResponse, PortalMovimientoItem,
+    PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
+    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -368,6 +369,93 @@ impl Store {
         match self {
             Store::Memory(r) => r.update_company_settings(company_id, req, actor).await,
             Store::Postgres(r) => r.update_company_settings(company_id, req, actor).await,
+        }
+    }
+
+    pub async fn list_portal_links(
+        &self,
+        company_id: &str,
+    ) -> Result<Vec<PortalUnitLinkItem>, ApiError> {
+        match self {
+            Store::Memory(r) => r.list_portal_links(company_id).await,
+            Store::Postgres(r) => r.list_portal_links(company_id).await,
+        }
+    }
+
+    pub async fn portal_lookup(
+        &self,
+        req: PortalLookupRequest,
+    ) -> Result<PortalLookupResponse, ApiError> {
+        match self {
+            Store::Memory(r) => r.portal_lookup(req).await,
+            Store::Postgres(r) => r.portal_lookup(req).await,
+        }
+    }
+
+    pub async fn portal_statement(
+        &self,
+        token: &str,
+    ) -> Result<PortalUnitStatement, ApiError> {
+        let payload: PortalTokenPayload = auth::verify_portal_token(token)?;
+        match self {
+            Store::Memory(r) => {
+                r.portal_statement(&payload.company_id, &payload.unit_id)
+                    .await
+            }
+            Store::Postgres(r) => {
+                r.portal_statement(&payload.company_id, &payload.unit_id)
+                    .await
+            }
+        }
+    }
+
+    pub async fn portal_create_checkout(
+        &self,
+        token: &str,
+        req: PortalCheckoutRequest,
+    ) -> Result<PortalCheckoutResponse, ApiError> {
+        let payload: PortalTokenPayload = auth::verify_portal_token(token)?;
+        match self {
+            Store::Memory(r) => {
+                r.portal_create_checkout(&payload.company_id, &payload.unit_id, req)
+                    .await
+            }
+            Store::Postgres(r) => {
+                r.portal_create_checkout(&payload.company_id, &payload.unit_id, req)
+                    .await
+            }
+        }
+    }
+
+    pub async fn apply_approved_payment(
+        &self,
+        reference: &str,
+        pasarela_tx_id: &str,
+        amount_in_cents: i64,
+        events_checksum: Option<(Vec<String>, i64, String, Value)>,
+        allow_sandbox_sim: bool,
+    ) -> Result<Value, ApiError> {
+        match self {
+            Store::Memory(r) => {
+                r.apply_approved_payment(
+                    reference,
+                    pasarela_tx_id,
+                    amount_in_cents,
+                    events_checksum.as_ref().map(|(p, t, c, d)| (p.as_slice(), *t, c.as_str(), d)),
+                    allow_sandbox_sim,
+                )
+                .await
+            }
+            Store::Postgres(r) => {
+                r.apply_approved_payment(
+                    reference,
+                    pasarela_tx_id,
+                    amount_in_cents,
+                    events_checksum.as_ref().map(|(p, t, c, d)| (p.as_slice(), *t, c.as_str(), d)),
+                    allow_sandbox_sim,
+                )
+                .await
+            }
         }
     }
 
@@ -927,4 +1015,235 @@ pub fn default_rubros_for_company(company_id: &str, presupuesto_anual: Decimal) 
             presupuesto_anual: (base * Decimal::from(*pct) / Decimal::from(100)).round_dp(0),
         })
         .collect()
+}
+
+pub fn extract_digits(raw: &str) -> String {
+    raw.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+pub fn normalize_unit_lookup(raw: &str) -> String {
+    raw.trim()
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect()
+}
+
+pub fn url_encode_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => {
+                use std::fmt::Write;
+                let _ = write!(&mut out, "%{b:02X}");
+            }
+        }
+    }
+    out
+}
+
+pub fn build_wompi_checkout_url(
+    public_key: &str,
+    amount_in_cents: i64,
+    reference: &str,
+    signature_integrity: &str,
+    redirect_url: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "https://checkout.wompi.co/p/?public-key={}&currency=COP&amount-in-cents={}&reference={}&signature%3Aintegrity={}",
+        url_encode_component(public_key),
+        amount_in_cents,
+        url_encode_component(reference),
+        url_encode_component(signature_integrity),
+    );
+    if let Some(redir) = redirect_url.map(str::trim).filter(|s| !s.is_empty()) {
+        url.push_str("&redirect-url=");
+        url.push_str(&url_encode_component(redir));
+    }
+    url
+}
+
+pub fn verify_wompi_event_checksum(
+    properties: &[String],
+    timestamp: i64,
+    checksum: &str,
+    data: &Value,
+    events_secret: &str,
+) -> Result<(), ApiError> {
+    if events_secret.trim().is_empty() {
+        return Err(ApiError::Unauthorized(
+            "La copropiedad no tiene configurado wompiEventsSecret para verificar webhooks."
+                .into(),
+        ));
+    }
+    let mut concat = String::new();
+    for path in properties {
+        let mut cursor = data;
+        for segment in path.split('.') {
+            cursor = cursor.get(segment).unwrap_or(&Value::Null);
+        }
+        match cursor {
+            Value::String(s) => concat.push_str(s),
+            Value::Number(n) => concat.push_str(&n.to_string()),
+            Value::Bool(b) => concat.push_str(if *b { "true" } else { "false" }),
+            _ => {}
+        }
+    }
+    concat.push_str(&timestamp.to_string());
+    concat.push_str(events_secret.trim());
+    let expected = auth::sha256_hex(&concat);
+    if !expected.eq_ignore_ascii_case(checksum.trim()) {
+        return Err(ApiError::Unauthorized(
+            "Firma criptográfica de webhook Wompi inválida.".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub struct ComputedUnitPortalFigures {
+    pub cuota_mensual: Decimal,
+    pub cargado_total: Decimal,
+    pub pagado_total: Decimal,
+    pub saldo_actual: Decimal,
+    pub descuento_pronto_pago: Decimal,
+    pub total_con_descuento: Decimal,
+    pub estado_cartera: String,
+    pub movimientos: Vec<PortalMovimientoItem>,
+}
+
+pub fn compute_unit_portal_figures(
+    company: &FrontendCopropiedad,
+    unit: &FrontendUnidad,
+    entries: &[FrontendComprobante],
+) -> ComputedUnitPortalFigures {
+    let hundred = Decimal::from(100);
+    let twelve = Decimal::from(12);
+    let cuota_mensual = ledger::round_cop((company.presupuesto_anual / twelve) * unit.coeficiente / hundred);
+
+    let mut cargado_total = Decimal::ZERO;
+    let mut pagado_total = Decimal::ZERO;
+    let mut movimientos = Vec::new();
+
+    for c in entries {
+        if c.estado == "ANULADO" || c.empresa_id != company.id {
+            continue;
+        }
+        let mut unit_debit = Decimal::ZERO;
+        let mut unit_credit = Decimal::ZERO;
+        let mut desc_list: Vec<&str> = Vec::new();
+        for l in &c.lineas {
+            if l.unidad_id.as_deref() != Some(unit.id.as_str()) {
+                continue;
+            }
+            if !CARTERA_ACCOUNTS.contains(&l.cuenta.as_str()) {
+                continue;
+            }
+            unit_debit += l.debito;
+            unit_credit += l.credito;
+            if !l.descripcion.trim().is_empty() {
+                desc_list.push(l.descripcion.trim());
+            }
+        }
+        if unit_debit > Decimal::ZERO || unit_credit > Decimal::ZERO {
+            cargado_total += unit_debit;
+            pagado_total += unit_credit;
+            movimientos.push(PortalMovimientoItem {
+                fecha: c.fecha.clone(),
+                periodo: c.periodo.clone(),
+                comprobante: format!("{}-{}", c.tipo, c.consecutivo),
+                tipo: c.tipo.clone(),
+                descripcion: if desc_list.is_empty() {
+                    c.descripcion.clone()
+                } else {
+                    desc_list.join(" · ")
+                },
+                cargo: ledger::round_cop(unit_debit),
+                abono: ledger::round_cop(unit_credit),
+            });
+        }
+    }
+
+    movimientos.sort_by(|a, b| b.fecha.cmp(&a.fecha).then_with(|| b.comprobante.cmp(&a.comprobante)));
+    let cargado_r = ledger::round_cop(cargado_total);
+    let pagado_r = ledger::round_cop(pagado_total);
+    let saldo_actual = (cargado_r - pagado_r).max(Decimal::ZERO);
+
+    let today_day = Utc::now().day() as i16;
+    let descuento_pronto_pago = if saldo_actual > Decimal::ZERO
+        && company.descuento_pronto_pago_pct > Decimal::ZERO
+        && today_day <= company.dia_corte_pronto_pago
+    {
+        let base_desc = cuota_mensual.min(saldo_actual);
+        ledger::round_cop(base_desc * company.descuento_pronto_pago_pct / hundred)
+    } else {
+        Decimal::ZERO
+    };
+    let total_con_descuento = (saldo_actual - descuento_pronto_pago).max(Decimal::ZERO);
+
+    let estado_cartera = if unit.cartera_congelada {
+        "CONGELADA".into()
+    } else if saldo_actual <= Decimal::ZERO {
+        "AL_DIA".into()
+    } else if cuota_mensual > Decimal::ZERO && saldo_actual > cuota_mensual {
+        "EN_MORA".into()
+    } else {
+        "PENDIENTE".into()
+    };
+
+    ComputedUnitPortalFigures {
+        cuota_mensual,
+        cargado_total: cargado_r,
+        pagado_total: pagado_r,
+        saldo_actual,
+        descuento_pronto_pago,
+        total_con_descuento,
+        estado_cartera,
+        movimientos,
+    }
+}
+
+pub fn build_portal_rc_lines(
+    unit: &FrontendUnidad,
+    pagador_id: &str,
+    referencia: &str,
+    monto_pagado: Decimal,
+    monto_descuento: Decimal,
+) -> Vec<FrontendLinea> {
+    let mut lines = vec![FrontendLinea {
+        id: "l-1".into(),
+        cuenta: "111005".into(),
+        descripcion: format!("Recaudo en línea portal · {referencia}"),
+        debito: monto_pagado,
+        credito: Decimal::ZERO,
+        tercero_id: Some(pagador_id.to_string()),
+        unidad_id: Some(unit.id.clone()),
+        rubro_id: None,
+    }];
+    if monto_descuento > Decimal::ZERO {
+        lines.push(FrontendLinea {
+            id: "l-2".into(),
+            cuenta: "417035".into(),
+            descripcion: format!("Descuento pronto pago · {referencia}"),
+            debito: monto_descuento,
+            credito: Decimal::ZERO,
+            tercero_id: Some(pagador_id.to_string()),
+            unidad_id: Some(unit.id.clone()),
+            rubro_id: None,
+        });
+    }
+    let idx = lines.len() + 1;
+    lines.push(FrontendLinea {
+        id: format!("l-{idx}"),
+        cuenta: "130505".into(),
+        descripcion: format!("Pago expensas unidad {} {} · {referencia}", unit.torre, unit.numero),
+        debito: Decimal::ZERO,
+        credito: monto_pagado + monto_descuento,
+        tercero_id: Some(pagador_id.to_string()),
+        unidad_id: Some(unit.id.clone()),
+        rubro_id: None,
+    });
+    lines
 }

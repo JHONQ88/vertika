@@ -11,16 +11,19 @@ use crate::domain::{
     CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest,
     FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea,
     FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount,
-    OpenNextPeriodResult, PostEntryResult, ThirdParty, UpdateCompanySettingsRequest,
-    UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
+    OpenNextPeriodResult, PortalCheckoutRequest, PortalCheckoutResponse, PortalIntencionPagoItem,
+    PortalLookupRequest, PortalLookupResponse, PortalUnitLinkItem, PortalUnitStatement,
+    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
-    build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
-    compute_unit_overdue_balances, default_rubros_for_company, derive_sigla, last_day_of_period,
-    next_period_ym, normalize_frontend_lines, normalize_requested_companies, origin_from_agent,
-    parse_seed_bundle, slugify_company_name, validate_and_hash_frontend_lines,
-    validate_create_pre_entry_input,
+    build_billing_lines, build_portal_rc_lines, build_pre_entry_document, build_reversal_lines,
+    build_wompi_checkout_url, closing_audit_detail, compute_unit_overdue_balances,
+    compute_unit_portal_figures, default_rubros_for_company, derive_sigla, extract_digits,
+    last_day_of_period, next_period_ym, normalize_frontend_lines, normalize_requested_companies,
+    normalize_unit_lookup, origin_from_agent, parse_seed_bundle, slugify_company_name,
+    validate_and_hash_frontend_lines, validate_create_pre_entry_input, verify_wompi_event_checksum,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -844,7 +847,10 @@ impl PostgresRepo {
                     tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
                     COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
                     COALESCE(llave_bre_b, '') AS llave_bre_b, presupuesto_anual,
-                    periodo_actual, saldos_iniciales, escala, color
+                    periodo_actual, saldos_iniciales, escala, color,
+                    COALESCE(wompi_public_key, '') AS wompi_public_key,
+                    COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
                FROM copropiedades
               ORDER BY created_at, slug",
         )
@@ -879,6 +885,9 @@ impl PostgresRepo {
                 saldos_iniciales: saldos,
                 escala: r.try_get("escala")?,
                 color: r.try_get("color")?,
+                wompi_public_key: r.try_get("wompi_public_key")?,
+                wompi_sandbox: r.try_get("wompi_sandbox")?,
+                wompi_configurado: r.try_get("wompi_configurado")?,
             });
         }
 
@@ -2935,6 +2944,9 @@ impl PostgresRepo {
             saldos_iniciales: HashMap::new(),
             escala: Decimal::ONE,
             color: "#0F766E".into(),
+            wompi_public_key: String::new(),
+            wompi_sandbox: true,
+            wompi_configurado: false,
         };
 
         Ok(CreateCompanyResult {
@@ -2989,7 +3001,9 @@ impl PostgresRepo {
                     tasa_mora_mensual, nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
                     sigla, ciudad, direccion, grupo_niif, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
                     COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct, COALESCE(llave_bre_b, '') AS llave_bre_b,
-                    color
+                    color, COALESCE(wompi_public_key, '') AS wompi_public_key,
+                    COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
                FROM copropiedades
               WHERE id = $1",
         )
@@ -3017,6 +3031,9 @@ impl PostgresRepo {
             saldos_iniciales: saldos_map,
             escala: company_row.escala,
             color: comp_meta.try_get("color")?,
+            wompi_public_key: comp_meta.try_get("wompi_public_key")?,
+            wompi_sandbox: comp_meta.try_get("wompi_sandbox")?,
+            wompi_configurado: comp_meta.try_get("wompi_configurado")?,
         };
 
         let unit_rows = sqlx::query(
@@ -3781,6 +3798,18 @@ impl PostgresRepo {
     ) -> Result<FrontendCopropiedad, ApiError> {
         let mut tx = self.db.pool.begin().await?;
         let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let pub_key_opt = req
+            .wompi_public_key
+            .map(|s| s.trim().to_string());
+        let int_sec_opt = req
+            .wompi_integrity_secret
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let ev_sec_opt = req
+            .wompi_events_secret
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let r = sqlx::query(
             "UPDATE copropiedades
                 SET razon_social = COALESCE(NULLIF(TRIM($2), ''), razon_social),
@@ -3789,7 +3818,11 @@ impl PostgresRepo {
                     tasa_mora_mensual = COALESCE($5, tasa_mora_mensual),
                     dia_corte_pronto_pago = COALESCE($6, dia_corte_pronto_pago),
                     descuento_pronto_pago_pct = COALESCE($7, descuento_pronto_pago_pct),
-                    llave_bre_b = COALESCE($8, llave_bre_b)
+                    llave_bre_b = COALESCE($8, llave_bre_b),
+                    wompi_public_key = COALESCE($9, wompi_public_key),
+                    wompi_integrity_secret = COALESCE($10, wompi_integrity_secret),
+                    wompi_events_secret = COALESCE($11, wompi_events_secret),
+                    wompi_sandbox = COALESCE($12, wompi_sandbox)
               WHERE id = $1
              RETURNING nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
                        sigla, ciudad, direccion, grupo_niif,
@@ -3797,7 +3830,10 @@ impl PostgresRepo {
                        tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
                        COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
                        COALESCE(llave_bre_b, '') AS llave_bre_b,
-                       presupuesto_anual, periodo_actual, saldos_iniciales, escala, color",
+                       presupuesto_anual, periodo_actual, saldos_iniciales, escala, color,
+                       COALESCE(wompi_public_key, '') AS wompi_public_key,
+                       COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
+                       (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado",
         )
         .bind(company.uuid)
         .bind(req.razon_social)
@@ -3807,6 +3843,10 @@ impl PostgresRepo {
         .bind(req.dia_corte_pronto_pago)
         .bind(req.descuento_pronto_pago_pct)
         .bind(req.llave_bre_b)
+        .bind(pub_key_opt)
+        .bind(int_sec_opt)
+        .bind(ev_sec_opt)
+        .bind(req.wompi_sandbox)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -3836,7 +3876,612 @@ impl PostgresRepo {
             saldos_iniciales: saldos,
             escala: r.try_get("escala")?,
             color: r.try_get("color")?,
+            wompi_public_key: r.try_get("wompi_public_key")?,
+            wompi_sandbox: r.try_get("wompi_sandbox")?,
+            wompi_configurado: r.try_get("wompi_configurado")?,
         })
+    }
+
+    pub async fn list_portal_links(
+        &self,
+        company_id: &str,
+    ) -> Result<Vec<PortalUnitLinkItem>, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let rows = sqlx::query(
+            "SELECT COALESCE(u.clave_externa, u.id::text) AS ext_id,
+                    u.grupo_torre, u.numero_unidad,
+                    COALESCE(tp.nombre, '') AS prop_nombre,
+                    COALESCE(tp.email, '') AS prop_email,
+                    COALESCE(tp.telefono, '') AS prop_tel,
+                    ta.nombre AS arr_nombre,
+                    ta.email AS arr_email,
+                    ta.telefono AS arr_tel
+               FROM unidades_inmobiliarias u
+               LEFT JOIN vinculos_unidad_tercero vp
+                 ON vp.unidad_id = u.id AND vp.rol_en_unidad = 'PROPIETARIO' AND vp.activo = TRUE
+               LEFT JOIN terceros tp ON tp.id = vp.tercero_id
+               LEFT JOIN vinculos_unidad_tercero va
+                 ON va.unidad_id = u.id AND va.rol_en_unidad = 'ARRENDATARIO' AND va.activo = TRUE
+               LEFT JOIN terceros ta ON ta.id = va.tercero_id
+              WHERE u.copropiedad_id = $1
+              ORDER BY u.grupo_torre, u.numero_unidad",
+        )
+        .bind(company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let ext_id: String = r.try_get("ext_id")?;
+            let token = auth::issue_portal_token(&company.slug, &ext_id)?;
+            out.push(PortalUnitLinkItem {
+                unit_id: ext_id,
+                torre: r.try_get("grupo_torre")?,
+                numero: r.try_get("numero_unidad")?,
+                propietario_nombre: r.try_get("prop_nombre")?,
+                propietario_email: r.try_get("prop_email")?,
+                propietario_telefono: r.try_get("prop_tel")?,
+                arrendatario_nombre: r.try_get("arr_nombre")?,
+                arrendatario_email: r.try_get("arr_email")?,
+                arrendatario_telefono: r.try_get("arr_tel")?,
+                token,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn portal_lookup(
+        &self,
+        req: PortalLookupRequest,
+    ) -> Result<PortalLookupResponse, ApiError> {
+        let slug = req.company_slug.trim();
+        let unit_needle = normalize_unit_lookup(&req.unidad);
+        let doc_needle = extract_digits(&req.documento);
+        if unit_needle.is_empty() || doc_needle.len() < 5 {
+            return Err(ApiError::unprocessable(
+                "Ingresa la unidad y el documento de identidad del propietario o arrendatario.",
+            ));
+        }
+
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, slug).await?;
+        let rows = sqlx::query(
+            "SELECT COALESCE(u.clave_externa, u.id::text) AS ext_id,
+                    u.grupo_torre, u.numero_unidad,
+                    COALESCE(u.matricula_inmobiliaria, '') AS matricula,
+                    COALESCE(tp.documento, '') AS prop_doc,
+                    COALESCE(ta.documento, '') AS arr_doc
+               FROM unidades_inmobiliarias u
+               LEFT JOIN vinculos_unidad_tercero vp
+                 ON vp.unidad_id = u.id AND vp.rol_en_unidad = 'PROPIETARIO' AND vp.activo = TRUE
+               LEFT JOIN terceros tp ON tp.id = vp.tercero_id
+               LEFT JOIN vinculos_unidad_tercero va
+                 ON va.unidad_id = u.id AND va.rol_en_unidad = 'ARRENDATARIO' AND va.activo = TRUE
+               LEFT JOIN terceros ta ON ta.id = va.tercero_id
+              WHERE u.copropiedad_id = $1",
+        )
+        .bind(company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let mat_filter = req
+            .matricula_ultimos4
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_uppercase());
+
+        for r in rows {
+            let ext_id: String = r.try_get("ext_id")?;
+            let torre: String = r.try_get("grupo_torre")?;
+            let numero: String = r.try_get("numero_unidad")?;
+            let full = normalize_unit_lookup(&format!("{torre}{numero}"));
+            let num_only = normalize_unit_lookup(&numero);
+            if full != unit_needle && num_only != unit_needle {
+                continue;
+            }
+            if let Some(m4) = &mat_filter {
+                let mat: String = r.try_get("matricula")?;
+                if !mat.trim().to_ascii_uppercase().ends_with(m4) {
+                    continue;
+                }
+            }
+            let prop_doc = extract_digits(&r.try_get::<String, _>("prop_doc")?);
+            let arr_doc = extract_digits(&r.try_get::<String, _>("arr_doc")?);
+            if prop_doc == doc_needle || (!arr_doc.is_empty() && arr_doc == doc_needle) {
+                let token = auth::issue_portal_token(&company.slug, &ext_id)?;
+                return Ok(PortalLookupResponse { token });
+            }
+        }
+
+        Err(ApiError::Unauthorized(
+            "No encontramos una unidad que coincida con esa torre/apto y documento.".into(),
+        ))
+    }
+
+    async fn load_portal_company_and_unit(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+    ) -> Result<(FrontendCopropiedad, Uuid, FrontendUnidad, String, String, String, Option<String>, String), ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company_row = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let comp_meta = sqlx::query(
+            "SELECT nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                    sigla, ciudad, direccion, grupo_niif,
+                    COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
+                    tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
+                    COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
+                    COALESCE(llave_bre_b, '') AS llave_bre_b,
+                    presupuesto_anual, color,
+                    COALESCE(wompi_public_key, '') AS wompi_public_key,
+                    COALESCE(wompi_integrity_secret, '') AS wompi_integrity_secret,
+                    COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
+               FROM copropiedades
+              WHERE id = $1",
+        )
+        .bind(company_row.uuid)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let saldos_map: HashMap<String, Decimal> =
+            serde_json::from_value(company_row.saldos_iniciales.clone()).unwrap_or_default();
+        let integrity_secret: String = comp_meta.try_get("wompi_integrity_secret")?;
+        let company_dto = FrontendCopropiedad {
+            id: company_row.slug.clone(),
+            nit: comp_meta.try_get("nit")?,
+            razon_social: comp_meta.try_get("razon_social")?,
+            nombre_corto: comp_meta.try_get("nombre_corto")?,
+            sigla: comp_meta.try_get("sigla")?,
+            ciudad: comp_meta.try_get("ciudad")?,
+            direccion: comp_meta.try_get("direccion")?,
+            grupo_niif: comp_meta.try_get("grupo_niif")?,
+            fondo_imprevistos_pct: comp_meta.try_get("fondo_pct")?,
+            tasa_mora_mensual: comp_meta.try_get("tasa_mora_mensual")?,
+            dia_corte_pronto_pago: comp_meta.try_get("dia_corte")?,
+            descuento_pronto_pago_pct: comp_meta.try_get("desc_pct")?,
+            llave_bre_b: comp_meta.try_get("llave_bre_b")?,
+            presupuesto_anual: comp_meta.try_get("presupuesto_anual")?,
+            periodo_actual: company_row.periodo_actual.clone(),
+            saldos_iniciales: saldos_map,
+            escala: company_row.escala,
+            color: comp_meta.try_get("color")?,
+            wompi_public_key: comp_meta.try_get("wompi_public_key")?,
+            wompi_sandbox: comp_meta.try_get("wompi_sandbox")?,
+            wompi_configurado: comp_meta.try_get("wompi_configurado")?,
+        };
+
+        let unit_row = sqlx::query(
+            "SELECT u.id, COALESCE(u.clave_externa, u.id::text) AS ext_id,
+                    u.grupo_torre, u.numero_unidad, COALESCE(u.tipo, 'APARTAMENTO') AS tipo,
+                    COALESCE(u.area, 0) AS area, u.coeficiente,
+                    COALESCE(u.matricula_inmobiliaria, '') AS matricula, u.cartera_congelada,
+                    COALESCE(COALESCE(tp.clave_externa, tp.id::text), '') AS prop_ext,
+                    COALESCE(tp.nombre, '') AS prop_nombre,
+                    COALESCE(tp.documento, '') AS prop_doc,
+                    COALESCE(tp.email, '') AS prop_email,
+                    COALESCE(ta.clave_externa, ta.id::text) AS arr_ext,
+                    ta.nombre AS arr_nombre
+               FROM unidades_inmobiliarias u
+               LEFT JOIN vinculos_unidad_tercero vp
+                 ON vp.unidad_id = u.id AND vp.rol_en_unidad = 'PROPIETARIO' AND vp.activo = TRUE
+               LEFT JOIN terceros tp ON tp.id = vp.tercero_id
+               LEFT JOIN vinculos_unidad_tercero va
+                 ON va.unidad_id = u.id AND va.rol_en_unidad = 'ARRENDATARIO' AND va.activo = TRUE
+               LEFT JOIN terceros ta ON ta.id = va.tercero_id
+              WHERE u.copropiedad_id = $1 AND (u.clave_externa = $2 OR u.id::text = $2)
+              LIMIT 1",
+        )
+        .bind(company_row.uuid)
+        .bind(unit_id.trim())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Unidad no encontrada en esta copropiedad.".into()))?;
+
+        let unit_dto = FrontendUnidad {
+            id: unit_row.try_get("ext_id")?,
+            empresa_id: company_row.slug.clone(),
+            torre: unit_row.try_get("grupo_torre")?,
+            numero: unit_row.try_get("numero_unidad")?,
+            tipo: unit_row.try_get("tipo")?,
+            area: unit_row.try_get("area")?,
+            coeficiente: unit_row.try_get("coeficiente")?,
+            matricula: unit_row.try_get("matricula")?,
+            propietario_id: unit_row.try_get("prop_ext")?,
+            arrendatario_id: unit_row.try_get("arr_ext")?,
+            cartera_congelada: unit_row.try_get("cartera_congelada")?,
+        };
+        let prop_nombre: String = unit_row.try_get("prop_nombre")?;
+        let prop_doc: String = unit_row.try_get("prop_doc")?;
+        let prop_email: String = unit_row.try_get("prop_email")?;
+        let arr_nombre: Option<String> = unit_row.try_get("arr_nombre")?;
+        tx.commit().await?;
+
+        Ok((
+            company_dto,
+            company_row.uuid,
+            unit_dto,
+            prop_nombre,
+            prop_doc,
+            prop_email,
+            arr_nombre,
+            integrity_secret,
+        ))
+    }
+
+    pub async fn portal_statement(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+    ) -> Result<PortalUnitStatement, ApiError> {
+        let (company, company_uuid, unit, prop_nombre, prop_doc, prop_email, arr_nombre, _) =
+            self.load_portal_company_and_unit(company_id, unit_id).await?;
+        let entries = self.load_entries_query(Some(company_uuid), None).await?;
+        let fig = compute_unit_portal_figures(&company, &unit, &entries);
+
+        let intent_rows = sqlx::query(
+            "SELECT i.id, i.referencia, i.periodo, i.monto_total, i.estado, i.pasarela,
+                    i.pasarela_tx_id, i.created_at, i.paid_at
+               FROM intenciones_pago i
+               JOIN unidades_inmobiliarias u ON u.id = i.unidad_id
+              WHERE i.copropiedad_id = $1 AND (u.clave_externa = $2 OR u.id::text = $2)
+              ORDER BY i.created_at DESC
+              LIMIT 8",
+        )
+        .bind(company_uuid)
+        .bind(&unit.id)
+        .fetch_all(&self.db.pool)
+        .await?;
+
+        let mut intenciones = Vec::with_capacity(intent_rows.len());
+        for ir in intent_rows {
+            let id: Uuid = ir.try_get("id")?;
+            let created: DateTime<Utc> = ir.try_get("created_at")?;
+            let paid: Option<DateTime<Utc>> = ir.try_get("paid_at")?;
+            intenciones.push(PortalIntencionPagoItem {
+                id: id.to_string(),
+                referencia: ir.try_get("referencia")?,
+                periodo: ir.try_get::<String, _>("periodo")?.trim().to_string(),
+                monto_total: ir.try_get("monto_total")?,
+                estado: ir.try_get("estado")?,
+                pasarela: ir.try_get("pasarela")?,
+                pasarela_tx_id: ir.try_get("pasarela_tx_id")?,
+                created_at: created.to_rfc3339(),
+                paid_at: paid.map(|dt| dt.to_rfc3339()),
+            });
+        }
+
+        Ok(PortalUnitStatement {
+            company_id: company.id,
+            razon_social: company.razon_social,
+            nombre_corto: company.nombre_corto,
+            nit: company.nit,
+            ciudad: company.ciudad,
+            direccion: company.direccion,
+            periodo_actual: company.periodo_actual,
+            llave_bre_b: company.llave_bre_b,
+            tasa_mora_mensual: company.tasa_mora_mensual,
+            dia_corte_pronto_pago: company.dia_corte_pronto_pago,
+            descuento_pronto_pago_pct: company.descuento_pronto_pago_pct,
+            wompi_public_key: company.wompi_public_key,
+            wompi_sandbox: company.wompi_sandbox,
+            wompi_configurado: company.wompi_configurado,
+            unit_id: unit.id,
+            torre: unit.torre,
+            numero: unit.numero,
+            tipo_unidad: unit.tipo,
+            coeficiente: unit.coeficiente,
+            matricula: unit.matricula,
+            cartera_congelada: unit.cartera_congelada,
+            propietario_nombre: prop_nombre,
+            propietario_documento: prop_doc,
+            propietario_email: prop_email,
+            arrendatario_nombre: arr_nombre,
+            cuota_mensual: fig.cuota_mensual,
+            cargado_total: fig.cargado_total,
+            pagado_total: fig.pagado_total,
+            saldo_actual: fig.saldo_actual,
+            descuento_pronto_pago: fig.descuento_pronto_pago,
+            total_con_descuento: fig.total_con_descuento,
+            estado_cartera: fig.estado_cartera,
+            movimientos: fig.movimientos,
+            intenciones,
+        })
+    }
+
+    pub async fn portal_create_checkout(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+        req: PortalCheckoutRequest,
+    ) -> Result<PortalCheckoutResponse, ApiError> {
+        let (company, company_uuid, unit, _, _, _, _, integrity_secret) =
+            self.load_portal_company_and_unit(company_id, unit_id).await?;
+        let entries = self.load_entries_query(Some(company_uuid), None).await?;
+        let fig = compute_unit_portal_figures(&company, &unit, &entries);
+        if fig.saldo_actual <= Decimal::ZERO {
+            return Err(ApiError::unprocessable("Esta unidad se encuentra al día ($ 0)."));
+        }
+
+        let aplicar_desc =
+            req.aplicar_descuento.unwrap_or(true) && fig.descuento_pronto_pago > Decimal::ZERO;
+        let max_payable = if aplicar_desc {
+            fig.total_con_descuento
+        } else {
+            fig.saldo_actual
+        };
+        let requested = req.monto.map(ledger::round_cop).unwrap_or(max_payable);
+        if requested <= Decimal::ZERO || requested > fig.saldo_actual {
+            return Err(ApiError::unprocessable(
+                "El monto a pagar debe ser mayor a $ 0 y no superar el saldo actual.",
+            ));
+        }
+        let descuento_aplicado = if aplicar_desc && requested >= fig.total_con_descuento {
+            fig.descuento_pronto_pago
+        } else {
+            Decimal::ZERO
+        };
+
+        let short_id = &Uuid::new_v4().simple().to_string()[..8].to_uppercase();
+        let referencia = format!(
+            "VTK-{}-{}-{}",
+            company.id.to_uppercase(),
+            normalize_unit_lookup(&unit.numero),
+            short_id
+        );
+        let pagador_ext = unit
+            .arrendatario_id
+            .clone()
+            .unwrap_or_else(|| unit.propietario_id.clone());
+
+        let unit_uuid: Uuid = sqlx::query_scalar(
+            "SELECT id FROM unidades_inmobiliarias
+              WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+              LIMIT 1",
+        )
+        .bind(company_uuid)
+        .bind(&unit.id)
+        .fetch_one(&self.db.pool)
+        .await?;
+
+        let tercero_uuid: Option<Uuid> = if pagador_ext.is_empty() {
+            None
+        } else {
+            sqlx::query_scalar(
+                "SELECT id FROM terceros WHERE clave_externa = $1 OR id::text = $1 LIMIT 1",
+            )
+            .bind(&pagador_ext)
+            .fetch_optional(&self.db.pool)
+            .await?
+        };
+
+        sqlx::query(
+            "INSERT INTO intenciones_pago (
+                id, copropiedad_id, unidad_id, tercero_id, referencia, periodo,
+                monto_capital, monto_mora, monto_descuento, monto_total, estado, pasarela
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'PENDIENTE','WOMPI')",
+        )
+        .bind(Uuid::new_v4())
+        .bind(company_uuid)
+        .bind(unit_uuid)
+        .bind(tercero_uuid)
+        .bind(&referencia)
+        .bind(&company.periodo_actual)
+        .bind(requested + descuento_aplicado)
+        .bind(descuento_aplicado)
+        .bind(requested)
+        .execute(&self.db.pool)
+        .await?;
+
+        let cents_str = (requested * Decimal::from(100)).round_dp(0).to_string();
+        let amount_in_cents: i64 = cents_str.parse().unwrap_or(0);
+        let signature_integrity = if !integrity_secret.trim().is_empty() {
+            auth::sha256_hex(&format!(
+                "{referencia}{amount_in_cents}COP{}",
+                integrity_secret.trim()
+            ))
+        } else {
+            String::new()
+        };
+        let sandbox_simulable = company.wompi_sandbox
+            && (company.wompi_public_key.is_empty()
+                || company.wompi_public_key.starts_with("pub_test_"));
+        let checkout_url =
+            if !company.wompi_public_key.is_empty() && !signature_integrity.is_empty() {
+                build_wompi_checkout_url(
+                    &company.wompi_public_key,
+                    amount_in_cents,
+                    &referencia,
+                    &signature_integrity,
+                    req.redirect_url.as_deref(),
+                )
+            } else {
+                String::new()
+            };
+
+        Ok(PortalCheckoutResponse {
+            referencia,
+            monto_total: requested,
+            monto_en_centavos: amount_in_cents,
+            moneda: "COP".into(),
+            wompi_public_key: company.wompi_public_key,
+            wompi_sandbox: company.wompi_sandbox,
+            signature_integrity,
+            checkout_url,
+            sandbox_simulable,
+        })
+    }
+
+    pub async fn apply_approved_payment(
+        &self,
+        reference: &str,
+        pasarela_tx_id: &str,
+        amount_in_cents: i64,
+        events_checksum: Option<(&[String], i64, &str, &Value)>,
+        allow_sandbox_sim: bool,
+    ) -> Result<Value, ApiError> {
+        let ref_clean = reference.trim();
+        let mut tx = self.db.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(format!("wompi-pay:{ref_clean}"))
+            .execute(&mut *tx)
+            .await?;
+
+        let row = sqlx::query(
+            "SELECT i.id, i.copropiedad_id, i.unidad_id, i.tercero_id,
+                    i.referencia, i.monto_descuento, i.monto_total, i.estado, i.comprobante_rc_id,
+                    COALESCE(co.wompi_public_key, '') AS wompi_public_key,
+                    COALESCE(co.wompi_events_secret, '') AS wompi_events_secret,
+                    COALESCE(co.wompi_sandbox, TRUE) AS wompi_sandbox,
+                    COALESCE(u.clave_externa, u.id::text) AS unit_ext,
+                    u.grupo_torre, u.numero_unidad, u.tipo AS u_tipo, COALESCE(u.area, 0) AS area,
+                    u.coeficiente, COALESCE(u.matricula_inmobiliaria, '') AS matricula,
+                    u.cartera_congelada,
+                    COALESCE(t.clave_externa, t.id::text, '') AS tp_ext
+               FROM intenciones_pago i
+               JOIN copropiedades co ON co.id = i.copropiedad_id
+               JOIN unidades_inmobiliarias u ON u.id = i.unidad_id
+               LEFT JOIN terceros t ON t.id = i.tercero_id
+              WHERE i.referencia = $1
+              FOR UPDATE OF i",
+        )
+        .bind(ref_clean)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("Intención de pago no encontrada.".into()))?;
+
+        let pub_key: String = row.try_get("wompi_public_key")?;
+        let ev_secret: String = row.try_get("wompi_events_secret")?;
+        let is_sandbox: bool = row.try_get("wompi_sandbox")?;
+
+        if let Some((props, ts, checksum, data_val)) = events_checksum {
+            verify_wompi_event_checksum(props, ts, checksum, data_val, &ev_secret)?;
+        } else if allow_sandbox_sim {
+            let can_sim = is_sandbox && (pub_key.is_empty() || pub_key.starts_with("pub_test_"));
+            if !can_sim {
+                return Err(ApiError::Forbidden(
+                    "La simulación está deshabilitada cuando la pasarela está en producción."
+                        .into(),
+                ));
+            }
+        } else {
+            return Err(ApiError::Unauthorized("Evento sin firma autorizada.".into()));
+        }
+
+        let intent_id: Uuid = row.try_get("id")?;
+        let estado: String = row.try_get("estado")?;
+        let existing_rc: Option<Uuid> = row.try_get("comprobante_rc_id")?;
+        if estado == "APROBADA" || existing_rc.is_some() {
+            tx.commit().await?;
+            return Ok(json!({
+                "ok": true,
+                "idempotent": true,
+                "referencia": ref_clean,
+                "comprobanteId": existing_rc.map(|u| u.to_string()),
+            }));
+        }
+
+        let comp_uuid: Uuid = row.try_get("copropiedad_id")?;
+        let company = Self::resolve_company_tx(&mut tx, &comp_uuid.to_string()).await?;
+        let puc = Self::fetch_company_puc_tx(&mut tx, company.uuid).await?;
+
+        let monto_total: Decimal = row.try_get("monto_total")?;
+        let monto_descuento: Decimal = row.try_get("monto_descuento")?;
+        let paid_amount = if amount_in_cents > 0 {
+            ledger::round_cop(Decimal::from(amount_in_cents) / Decimal::from(100))
+        } else {
+            monto_total
+        };
+
+        let unit_dto = FrontendUnidad {
+            id: row.try_get("unit_ext")?,
+            empresa_id: company.slug.clone(),
+            torre: row.try_get("grupo_torre")?,
+            numero: row.try_get("numero_unidad")?,
+            tipo: row.try_get("u_tipo")?,
+            area: row.try_get("area")?,
+            coeficiente: row.try_get("coeficiente")?,
+            matricula: row.try_get("matricula")?,
+            propietario_id: row.try_get("tp_ext")?,
+            arrendatario_id: None,
+            cartera_congelada: row.try_get("cartera_congelada")?,
+        };
+        let pagador_ext = unit_dto.propietario_id.clone();
+        let rc_lines = build_portal_rc_lines(
+            &unit_dto,
+            &pagador_ext,
+            ref_clean,
+            paid_amount,
+            monto_descuento,
+        );
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let desc = format!(
+            "Recaudo en línea {} {} · {}",
+            unit_dto.torre, unit_dto.numero, ref_clean
+        );
+
+        let comp = Self::insert_voucher_tx(
+            &mut tx,
+            &company,
+            "RC",
+            &company.periodo_actual,
+            &today,
+            "PORTAL_WOMPI",
+            &desc,
+            Some(ref_clean),
+            "Portal Wompi",
+            rc_lines,
+            &puc,
+        )
+        .await?;
+
+        let rc_uuid = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM comprobantes_contables
+              WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+              LIMIT 1",
+        )
+        .bind(company.uuid)
+        .bind(&comp.id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE intenciones_pago
+                SET estado = 'APROBADA',
+                    pasarela_tx_id = $2,
+                    comprobante_rc_id = $3,
+                    paid_at = NOW()
+              WHERE id = $1",
+        )
+        .bind(intent_id)
+        .bind(pasarela_tx_id)
+        .bind(rc_uuid)
+        .execute(&mut *tx)
+        .await?;
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            "Portal Wompi",
+            "RECAUDO_PORTAL",
+            &format!(
+                "RC-{} · {} {} · Ref {} · ${}",
+                comp.consecutivo, unit_dto.torre, unit_dto.numero, ref_clean, paid_amount
+            ),
+        )
+        .await?;
+
+        tx.commit().await?;
+        Ok(json!({
+            "ok": true,
+            "idempotent": false,
+            "referencia": ref_clean,
+            "comprobante": comp,
+        }))
     }
 
     pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {

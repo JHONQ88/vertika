@@ -10,16 +10,20 @@ use crate::domain::{
     CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
     CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
     FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PostEntryResult, ThirdParty,
+    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
+    PortalCheckoutResponse, PortalIntencionPagoItem, PortalLookupRequest, PortalLookupResponse,
+    PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
     UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
-    build_billing_lines, build_pre_entry_document, build_reversal_lines, closing_audit_detail,
-    compute_cartera_total, compute_traslado_fondo, compute_unit_overdue_balances,
-    default_rubros_for_company, derive_sigla, last_day_of_period, next_period_ym,
-    normalize_frontend_lines, normalize_requested_companies, origin_from_agent, parse_seed_bundle,
+    build_billing_lines, build_portal_rc_lines, build_pre_entry_document, build_reversal_lines,
+    build_wompi_checkout_url, closing_audit_detail, compute_cartera_total, compute_traslado_fondo,
+    compute_unit_overdue_balances, compute_unit_portal_figures, default_rubros_for_company,
+    derive_sigla, extract_digits, last_day_of_period, next_period_ym, normalize_frontend_lines,
+    normalize_requested_companies, normalize_unit_lookup, origin_from_agent, parse_seed_bundle,
     slugify_company_name, validate_and_hash_frontend_lines, validate_create_pre_entry_input,
+    verify_wompi_event_checksum,
 };
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
@@ -36,6 +40,30 @@ struct StoredUser {
     created_at: String,
 }
 
+#[derive(Clone, Default)]
+struct WompiSecrets {
+    integrity_secret: String,
+    events_secret: String,
+}
+
+#[derive(Clone)]
+struct StoredPaymentIntent {
+    id: String,
+    company_id: String,
+    unit_id: String,
+    tercero_id: String,
+    referencia: String,
+    periodo: String,
+    monto_descuento: Decimal,
+    monto_total: Decimal,
+    estado: String,
+    pasarela: String,
+    pasarela_tx_id: Option<String>,
+    comprobante_rc_id: Option<String>,
+    created_at: String,
+    paid_at: Option<String>,
+}
+
 struct MemoryData {
     datos: BootstrapDatos,
     estado: FrontendEstadoApp,
@@ -44,6 +72,8 @@ struct MemoryData {
     third_parties: Vec<ThirdParty>,
     users: Vec<StoredUser>,
     company_owners: HashMap<String, String>,
+    wompi_secrets: HashMap<String, WompiSecrets>,
+    payment_intents: Vec<StoredPaymentIntent>,
     legacy_override: Option<Value>,
 }
 
@@ -138,6 +168,8 @@ impl MemoryRepo {
             third_parties: third_parties_from_seed(seed),
             users,
             company_owners,
+            wompi_secrets: HashMap::new(),
+            payment_intents: Vec::new(),
             legacy_override: None,
         })
     }
@@ -587,6 +619,9 @@ impl MemoryRepo {
             saldos_iniciales: HashMap::new(),
             escala: Decimal::ONE,
             color: "#0F766E".into(),
+            wompi_public_key: String::new(),
+            wompi_sandbox: true,
+            wompi_configurado: false,
         };
 
         g.datos.companies.push(copropiedad.clone());
@@ -1849,7 +1884,24 @@ impl MemoryRepo {
         if let Some(v) = req.llave_bre_b {
             c.llave_bre_b = v;
         }
-        let updated = c.clone();
+        if let Some(v) = req.wompi_public_key {
+            c.wompi_public_key = v.trim().to_string();
+        }
+        if let Some(v) = req.wompi_sandbox {
+            c.wompi_sandbox = v;
+        }
+        let cid_key = c.id.clone();
+        let updated_pub = c.wompi_public_key.clone();
+        let entry = g.wompi_secrets.entry(cid_key).or_default();
+        if let Some(sec) = req.wompi_integrity_secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            entry.integrity_secret = sec;
+        }
+        if let Some(ev_sec) = req.wompi_events_secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            entry.events_secret = ev_sec;
+        }
+        let configured = !updated_pub.is_empty() && !entry.integrity_secret.is_empty();
+        g.datos.companies[idx].wompi_configurado = configured;
+        let updated = g.datos.companies[idx].clone();
         let ev = Self::make_audit(
             company_id,
             actor,
@@ -1859,6 +1911,415 @@ impl MemoryRepo {
         g.estado.auditoria.insert(0, ev);
         g.estado.auditoria.truncate(200);
         Ok(updated)
+    }
+
+    pub async fn list_portal_links(
+        &self,
+        company_id: &str,
+    ) -> Result<Vec<PortalUnitLinkItem>, ApiError> {
+        let g = self.inner.read().await;
+        Self::find_company(&g.datos, company_id)?;
+        let mut out = Vec::new();
+        for u in g.datos.units.iter().filter(|u| u.empresa_id == company_id) {
+            let prop = g.datos.terceros.iter().find(|t| t.id == u.propietario_id);
+            let arr = u
+                .arrendatario_id
+                .as_ref()
+                .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid));
+            let token = auth::issue_portal_token(company_id, &u.id)?;
+            out.push(PortalUnitLinkItem {
+                unit_id: u.id.clone(),
+                torre: u.torre.clone(),
+                numero: u.numero.clone(),
+                propietario_nombre: prop.map(|p| p.nombre.clone()).unwrap_or_default(),
+                propietario_email: prop.map(|p| p.email.clone()).unwrap_or_default(),
+                propietario_telefono: prop.map(|p| p.telefono.clone()).unwrap_or_default(),
+                arrendatario_nombre: arr.map(|a| a.nombre.clone()),
+                arrendatario_email: arr.map(|a| a.email.clone()),
+                arrendatario_telefono: arr.map(|a| a.telefono.clone()),
+                token,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn portal_lookup(
+        &self,
+        req: PortalLookupRequest,
+    ) -> Result<PortalLookupResponse, ApiError> {
+        let slug = req.company_slug.trim();
+        let unit_needle = normalize_unit_lookup(&req.unidad);
+        let doc_needle = extract_digits(&req.documento);
+        if unit_needle.is_empty() || doc_needle.len() < 5 {
+            return Err(ApiError::unprocessable(
+                "Ingresa la unidad y el documento de identidad del propietario o arrendatario.",
+            ));
+        }
+
+        let g = self.inner.read().await;
+        let company = Self::find_company(&g.datos, slug)?;
+        let mat_filter = req
+            .matricula_ultimos4
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_uppercase());
+
+        for u in g.datos.units.iter().filter(|u| u.empresa_id == company.id) {
+            let full = normalize_unit_lookup(&format!("{}{}", u.torre, u.numero));
+            let num_only = normalize_unit_lookup(&u.numero);
+            if full != unit_needle && num_only != unit_needle {
+                continue;
+            }
+            if let Some(m4) = &mat_filter {
+                let mat = u.matricula.trim().to_ascii_uppercase();
+                if !mat.ends_with(m4) {
+                    continue;
+                }
+            }
+            let prop_doc = g
+                .datos
+                .terceros
+                .iter()
+                .find(|t| t.id == u.propietario_id)
+                .map(|t| extract_digits(&t.documento))
+                .unwrap_or_default();
+            let arr_doc = u
+                .arrendatario_id
+                .as_ref()
+                .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid))
+                .map(|t| extract_digits(&t.documento))
+                .unwrap_or_default();
+
+            if prop_doc == doc_needle || (!arr_doc.is_empty() && arr_doc == doc_needle) {
+                let token = auth::issue_portal_token(&company.id, &u.id)?;
+                return Ok(PortalLookupResponse { token });
+            }
+        }
+
+        Err(ApiError::Unauthorized(
+            "No encontramos una unidad que coincida con esa torre/apto y documento.".into(),
+        ))
+    }
+
+    pub async fn portal_statement(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+    ) -> Result<PortalUnitStatement, ApiError> {
+        let g = self.inner.read().await;
+        let company = Self::find_company(&g.datos, company_id)?;
+        let unit = g
+            .datos
+            .units
+            .iter()
+            .find(|u| u.empresa_id == company.id && u.id == unit_id)
+            .ok_or_else(|| ApiError::NotFound("Unidad no encontrada en esta copropiedad.".into()))?;
+        let prop = g.datos.terceros.iter().find(|t| t.id == unit.propietario_id);
+        let arr = unit
+            .arrendatario_id
+            .as_ref()
+            .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid));
+
+        let fig = compute_unit_portal_figures(company, unit, &g.estado.comprobantes);
+        let intenciones = g
+            .payment_intents
+            .iter()
+            .filter(|i| i.company_id == company.id && i.unit_id == unit.id)
+            .rev()
+            .take(8)
+            .map(|i| PortalIntencionPagoItem {
+                id: i.id.clone(),
+                referencia: i.referencia.clone(),
+                periodo: i.periodo.clone(),
+                monto_total: i.monto_total,
+                estado: i.estado.clone(),
+                pasarela: i.pasarela.clone(),
+                pasarela_tx_id: i.pasarela_tx_id.clone(),
+                created_at: i.created_at.clone(),
+                paid_at: i.paid_at.clone(),
+            })
+            .collect();
+
+        Ok(PortalUnitStatement {
+            company_id: company.id.clone(),
+            razon_social: company.razon_social.clone(),
+            nombre_corto: company.nombre_corto.clone(),
+            nit: company.nit.clone(),
+            ciudad: company.ciudad.clone(),
+            direccion: company.direccion.clone(),
+            periodo_actual: company.periodo_actual.clone(),
+            llave_bre_b: company.llave_bre_b.clone(),
+            tasa_mora_mensual: company.tasa_mora_mensual,
+            dia_corte_pronto_pago: company.dia_corte_pronto_pago,
+            descuento_pronto_pago_pct: company.descuento_pronto_pago_pct,
+            wompi_public_key: company.wompi_public_key.clone(),
+            wompi_sandbox: company.wompi_sandbox,
+            wompi_configurado: company.wompi_configurado,
+            unit_id: unit.id.clone(),
+            torre: unit.torre.clone(),
+            numero: unit.numero.clone(),
+            tipo_unidad: unit.tipo.clone(),
+            coeficiente: unit.coeficiente,
+            matricula: unit.matricula.clone(),
+            cartera_congelada: unit.cartera_congelada,
+            propietario_nombre: prop.map(|p| p.nombre.clone()).unwrap_or_default(),
+            propietario_documento: prop.map(|p| p.documento.clone()).unwrap_or_default(),
+            propietario_email: prop.map(|p| p.email.clone()).unwrap_or_default(),
+            arrendatario_nombre: arr.map(|a| a.nombre.clone()),
+            cuota_mensual: fig.cuota_mensual,
+            cargado_total: fig.cargado_total,
+            pagado_total: fig.pagado_total,
+            saldo_actual: fig.saldo_actual,
+            descuento_pronto_pago: fig.descuento_pronto_pago,
+            total_con_descuento: fig.total_con_descuento,
+            estado_cartera: fig.estado_cartera,
+            movimientos: fig.movimientos,
+            intenciones,
+        })
+    }
+
+    pub async fn portal_create_checkout(
+        &self,
+        company_id: &str,
+        unit_id: &str,
+        req: PortalCheckoutRequest,
+    ) -> Result<PortalCheckoutResponse, ApiError> {
+        let mut g = self.inner.write().await;
+        let company = Self::find_company(&g.datos, company_id)?.clone();
+        let unit = g
+            .datos
+            .units
+            .iter()
+            .find(|u| u.empresa_id == company.id && u.id == unit_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound("Unidad no encontrada.".into()))?;
+
+        let fig = compute_unit_portal_figures(&company, &unit, &g.estado.comprobantes);
+        if fig.saldo_actual <= Decimal::ZERO {
+            return Err(ApiError::unprocessable("Esta unidad se encuentra al día ($ 0)."));
+        }
+
+        let aplicar_desc = req.aplicar_descuento.unwrap_or(true) && fig.descuento_pronto_pago > Decimal::ZERO;
+        let max_payable = if aplicar_desc {
+            fig.total_con_descuento
+        } else {
+            fig.saldo_actual
+        };
+        let requested = req.monto.map(ledger::round_cop).unwrap_or(max_payable);
+        if requested <= Decimal::ZERO || requested > fig.saldo_actual {
+            return Err(ApiError::unprocessable(
+                "El monto a pagar debe ser mayor a $ 0 y no superar el saldo actual.",
+            ));
+        }
+
+        let descuento_aplicado = if aplicar_desc && requested >= fig.total_con_descuento {
+            fig.descuento_pronto_pago
+        } else {
+            Decimal::ZERO
+        };
+
+        let short_id = &Uuid::new_v4().simple().to_string()[..8].to_uppercase();
+        let referencia = format!(
+            "VTK-{}-{}-{}",
+            company.id.to_uppercase(),
+            normalize_unit_lookup(&unit.numero),
+            short_id
+        );
+        let pagador_id = unit
+            .arrendatario_id
+            .clone()
+            .unwrap_or_else(|| unit.propietario_id.clone());
+
+        let cents_str = (requested * Decimal::from(100)).round_dp(0).to_string();
+        let amount_in_cents: i64 = cents_str.parse().unwrap_or(0);
+        let sec = g
+            .wompi_secrets
+            .get(&company.id)
+            .cloned()
+            .unwrap_or_default();
+        let signature_integrity = if !sec.integrity_secret.is_empty() {
+            auth::sha256_hex(&format!("{referencia}{amount_in_cents}COP{}", sec.integrity_secret))
+        } else {
+            String::new()
+        };
+
+        let sandbox_simulable = company.wompi_sandbox
+            && (company.wompi_public_key.is_empty()
+                || company.wompi_public_key.starts_with("pub_test_"));
+        let checkout_url = if !company.wompi_public_key.is_empty() && !signature_integrity.is_empty()
+        {
+            build_wompi_checkout_url(
+                &company.wompi_public_key,
+                amount_in_cents,
+                &referencia,
+                &signature_integrity,
+                req.redirect_url.as_deref(),
+            )
+        } else {
+            String::new()
+        };
+
+        g.payment_intents.push(StoredPaymentIntent {
+            id: format!("pay-{}", Uuid::new_v4().simple()),
+            company_id: company.id.clone(),
+            unit_id: unit.id.clone(),
+            tercero_id: pagador_id,
+            referencia: referencia.clone(),
+            periodo: company.periodo_actual.clone(),
+            monto_descuento: descuento_aplicado,
+            monto_total: requested,
+            estado: "PENDIENTE".into(),
+            pasarela: "WOMPI".into(),
+            pasarela_tx_id: None,
+            comprobante_rc_id: None,
+            created_at: Utc::now().to_rfc3339(),
+            paid_at: None,
+        });
+
+        Ok(PortalCheckoutResponse {
+            referencia,
+            monto_total: requested,
+            monto_en_centavos: amount_in_cents,
+            moneda: "COP".into(),
+            wompi_public_key: company.wompi_public_key,
+            wompi_sandbox: company.wompi_sandbox,
+            signature_integrity,
+            checkout_url,
+            sandbox_simulable,
+        })
+    }
+
+    pub async fn apply_approved_payment(
+        &self,
+        reference: &str,
+        pasarela_tx_id: &str,
+        amount_in_cents: i64,
+        events_checksum: Option<(&[String], i64, &str, &Value)>,
+        allow_sandbox_sim: bool,
+    ) -> Result<Value, ApiError> {
+        let mut g = self.inner.write().await;
+        let idx = g
+            .payment_intents
+            .iter()
+            .position(|i| i.referencia == reference.trim())
+            .ok_or_else(|| ApiError::NotFound("Intención de pago no encontrada.".into()))?;
+
+        let intent = g.payment_intents[idx].clone();
+        let company = Self::find_company(&g.datos, &intent.company_id)?.clone();
+
+        if let Some((props, ts, checksum, data_val)) = events_checksum {
+            let ev_sec = g
+                .wompi_secrets
+                .get(&company.id)
+                .map(|s| s.events_secret.as_str())
+                .unwrap_or("");
+            verify_wompi_event_checksum(props, ts, checksum, data_val, ev_sec)?;
+        } else if allow_sandbox_sim {
+            let can_sim = company.wompi_sandbox
+                && (company.wompi_public_key.is_empty()
+                    || company.wompi_public_key.starts_with("pub_test_"));
+            if !can_sim {
+                return Err(ApiError::Forbidden(
+                    "La simulación está deshabilitada cuando la pasarela está en producción."
+                        .into(),
+                ));
+            }
+        } else {
+            return Err(ApiError::Unauthorized("Evento sin firma autorizada.".into()));
+        }
+
+        if intent.estado == "APROBADA" || intent.comprobante_rc_id.is_some() {
+            return Ok(json!({
+                "ok": true,
+                "idempotent": true,
+                "referencia": intent.referencia,
+                "comprobanteId": intent.comprobante_rc_id,
+            }));
+        }
+
+        let paid_amount = if amount_in_cents > 0 {
+            ledger::round_cop(Decimal::from(amount_in_cents) / Decimal::from(100))
+        } else {
+            intent.monto_total
+        };
+        let unit = g
+            .datos
+            .units
+            .iter()
+            .find(|u| u.id == intent.unit_id)
+            .cloned()
+            .ok_or_else(|| ApiError::NotFound("Unidad del pago no encontrada.".into()))?;
+
+        let consecutivo = Self::next_consecutive(&g.estado, &company.id, "RC");
+        let comp_id = format!("{}-RC-{consecutivo}", company.id);
+        let raw_lines = build_portal_rc_lines(
+            &unit,
+            &intent.tercero_id,
+            &intent.referencia,
+            paid_amount,
+            intent.monto_descuento,
+        );
+        let lines = normalize_frontend_lines(raw_lines, &comp_id);
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let desc = format!(
+            "Recaudo en línea {} {} · {}",
+            unit.torre, unit.numero, intent.referencia
+        );
+        let (total_d, total_c, hash) = validate_and_hash_frontend_lines(
+            &company.id,
+            &company.periodo_actual,
+            "RC",
+            &today,
+            &desc,
+            &lines,
+            &g.puc,
+        )?;
+
+        let comp = FrontendComprobante {
+            id: comp_id.clone(),
+            empresa_id: company.id.clone(),
+            periodo: company.periodo_actual.clone(),
+            tipo: "RC".into(),
+            consecutivo,
+            fecha: today,
+            estado: "ASENTADO".into(),
+            origen: "PORTAL_WOMPI".into(),
+            descripcion: desc,
+            lineas: lines,
+            total_debito: total_d,
+            total_credito: total_c,
+            referencia: Some(intent.referencia.clone()),
+            hash,
+            creado_por: "Portal de Pagos · Wompi".into(),
+            created_at: Utc::now().to_rfc3339(),
+        };
+
+        let now_iso = Utc::now().to_rfc3339();
+        g.payment_intents[idx].estado = "APROBADA".into();
+        g.payment_intents[idx].pasarela_tx_id = Some(pasarela_tx_id.to_string());
+        g.payment_intents[idx].comprobante_rc_id = Some(comp_id);
+        g.payment_intents[idx].paid_at = Some(now_iso);
+
+        let ev = Self::make_audit(
+            &company.id,
+            "Portal Wompi",
+            "RECAUDO_PORTAL",
+            format!(
+                "RC-{consecutivo} · {} {} · Ref {} · ${}",
+                unit.torre, unit.numero, intent.referencia, paid_amount
+            ),
+        );
+        g.estado.comprobantes.push(comp.clone());
+        g.estado.auditoria.insert(0, ev);
+        g.estado.auditoria.truncate(200);
+
+        Ok(json!({
+            "ok": true,
+            "idempotent": false,
+            "referencia": intent.referencia,
+            "comprobante": comp,
+        }))
     }
 
     pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {

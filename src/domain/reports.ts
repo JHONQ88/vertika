@@ -473,3 +473,125 @@ export function descargarArchivo(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+export function generarCuentaDeCobroHTML(params: {
+  razonSocial: string;
+  nit: string;
+  ciudad: string;
+  direccion: string;
+  periodoActual: string;
+  unidadLabel: string;
+  propietarioNombre: string;
+  propietarioDocumento: string;
+  arrendatarioNombre?: string | null;
+  cuotaMensual: number;
+  cargadoTotal: number;
+  pagadoTotal: number;
+  saldoActual: number;
+  descuentoProntoPago: number;
+  totalConDescuento: number;
+  diaCorteProntoPago: number;
+  llaveBreB: string;
+  linkPago?: string;
+  movimientos: Array<{
+    fecha: string;
+    comprobante: string;
+    descripcion: string;
+    cargo: number;
+    abono: number;
+  }>;
+}): string {
+  const rows = params.movimientos
+    .slice(0, 12)
+    .map(
+      (m) => `<tr>
+        <td>${escHtml(fmtFecha(m.fecha))}</td>
+        <td class="mono">${escHtml(m.comprobante)}</td>
+        <td>${escHtml(m.descripcion)}</td>
+        <td class="num mono">${m.cargo > 0 ? escHtml(fmtMoney(m.cargo)) : '—'}</td>
+        <td class="num mono">${m.abono > 0 ? escHtml(fmtMoney(m.abono)) : '—'}</td>
+      </tr>`,
+    )
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>Cuenta de Cobro - ${escHtml(params.unidadLabel)} - ${escHtml(params.periodoActual)}</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 36px; color: #111113; line-height: 1.5; background: #fff; }
+  .sheet { max-width: 760px; margin: 0 auto; border: 1px solid #e4e4e7; border-radius: 8px; padding: 28px; }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid #e4e4e7; padding-bottom: 16px; gap: 16px; }
+  h1 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
+  .muted { color: #52525b; font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0; }
+  .box { border: 1px solid #e4e4e7; border-radius: 6px; padding: 12px; background: #fafafa; }
+  .box small { display: block; color: #52525b; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .box strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12.5px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #e4e4e7; text-align: left; }
+  th { background: #f4f4f5; font-weight: 600; font-size: 11.5px; text-transform: uppercase; color: #52525b; }
+  .num { text-align: right; }
+  .mono { font-family: ui-monospace, SFMono-Regular, monospace; font-variant-numeric: tabular-nums; }
+  .pay { margin-top: 18px; padding: 14px; border: 1px solid #0f766e; border-radius: 6px; background: #f0fdfa; font-size: 13px; }
+  @media print { body { margin: 0; } .sheet { border: none; } }
+</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="top">
+      <div>
+        <h1>${escHtml(params.razonSocial)}</h1>
+        <div class="muted">NIT ${escHtml(params.nit)} · ${escHtml(params.direccion)} · ${escHtml(params.ciudad)}</div>
+        <div class="muted">Entidad Sin Ánimo de Lucro · Ley 675 de 2001</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;text-transform:uppercase;color:#52525b;font-weight:700">Cuenta de Cobro</div>
+        <div class="mono" style="font-size:15px;font-weight:700">${escHtml(params.unidadLabel)}</div>
+        <div class="muted">Periodo ${escHtml(fmtPeriodo(params.periodoActual))} · Emitida ${escHtml(fmtFecha(hoyISO()))}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;font-size:13px">
+      <strong>Propietario:</strong> ${escHtml(params.propietarioNombre)} (${escHtml(params.propietarioDocumento)})
+      ${params.arrendatarioNombre ? `<br/><strong>Arrendatario:</strong> ${escHtml(params.arrendatarioNombre)}` : ''}
+    </div>
+
+    <div class="grid">
+      <div class="box">
+        <small>Cuota ordinaria mensual</small>
+        <strong class="mono">${escHtml(fmtMoney(params.cuotaMensual))}</strong>
+      </div>
+      <div class="box">
+        <small>Saldo total a pagar</small>
+        <strong class="mono" style="color:${params.saldoActual > 0 ? '#b45309' : '#0f766e'}">${escHtml(fmtMoney(params.saldoActual))}</strong>
+      </div>
+      <div class="box">
+        <small>${params.descuentoProntoPago > 0 ? `Con pronto pago (hasta día ${params.diaCorteProntoPago})` : 'Total recaudado acumulado'}</small>
+        <strong class="mono">${escHtml(fmtMoney(params.descuentoProntoPago > 0 ? params.totalConDescuento : params.pagadoTotal))}</strong>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Doc</th>
+          <th>Concepto</th>
+          <th class="num">Cargo</th>
+          <th class="num">Abono</th>
+        </tr>
+      </thead>
+      <tbody>${rows || '<tr><td colspan="5">Sin movimientos recientes</td></tr>'}</tbody>
+    </table>
+
+    <div class="pay">
+      <strong>Canales de pago habilitados:</strong><br/>
+      ${params.llaveBreB ? `• <strong>Llave Bre-B / Transferencia:</strong> <span class="mono">${escHtml(params.llaveBreB)}</span> (indicar unidad ${escHtml(params.unidadLabel)})<br/>` : ''}
+      ${params.linkPago ? `• <strong>Pago en línea (PSE / Nequi / Tarjeta):</strong> <a href="${escHtml(params.linkPago)}">${escHtml(params.linkPago)}</a>` : ''}
+    </div>
+  </div>
+</body>
+</html>`;
+}
