@@ -24,7 +24,7 @@ use crate::repo::{
     derive_sigla, extract_digits, last_day_of_period, next_period_ym, normalize_frontend_lines,
     normalize_requested_companies, normalize_unit_lookup, origin_from_agent, parse_seed_bundle,
     slugify_company_name, validate_and_hash_frontend_lines, validate_create_pre_entry_input,
-    verify_wompi_event_checksum,
+    validate_hex_color, validate_portal_image_url, verify_wompi_event_checksum,
 };
 use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
@@ -623,6 +623,11 @@ impl MemoryRepo {
             wompi_public_key: String::new(),
             wompi_sandbox: true,
             wompi_configurado: false,
+            portal_logo_url: String::new(),
+            portal_cover_url: String::new(),
+            portal_color_primario: "#0F766E".into(),
+            portal_mensaje_bienvenida: String::new(),
+            portal_whatsapp_soporte: String::new(),
         };
 
         g.datos.companies.push(copropiedad.clone());
@@ -1891,6 +1896,21 @@ impl MemoryRepo {
         if let Some(v) = req.wompi_sandbox {
             c.wompi_sandbox = v;
         }
+        if let Some(v) = req.portal_logo_url {
+            c.portal_logo_url = validate_portal_image_url(&v, "Logo del portal")?;
+        }
+        if let Some(v) = req.portal_cover_url {
+            c.portal_cover_url = validate_portal_image_url(&v, "Foto de portada del portal")?;
+        }
+        if let Some(v) = req.portal_color_primario {
+            c.portal_color_primario = validate_hex_color(&v)?;
+        }
+        if let Some(v) = req.portal_mensaje_bienvenida {
+            c.portal_mensaje_bienvenida = v.trim().chars().take(280).collect();
+        }
+        if let Some(v) = req.portal_whatsapp_soporte {
+            c.portal_whatsapp_soporte = v.trim().chars().take(40).collect();
+        }
         let cid_key = c.id.clone();
         let updated_pub = c.wompi_public_key.clone();
         let entry = g.wompi_secrets.entry(cid_key).or_default();
@@ -1963,11 +1983,15 @@ impl MemoryRepo {
             direccion: company.direccion.clone(),
             periodo_actual: company.periodo_actual.clone(),
             turnstile_site_key,
-            portal_logo_url: String::new(),
-            portal_cover_url: String::new(),
-            portal_color_primario: "#0F766E".into(),
-            portal_mensaje_bienvenida: String::new(),
-            portal_whatsapp_soporte: String::new(),
+            portal_logo_url: company.portal_logo_url.clone(),
+            portal_cover_url: company.portal_cover_url.clone(),
+            portal_color_primario: if company.portal_color_primario.trim().is_empty() {
+                "#0F766E".into()
+            } else {
+                company.portal_color_primario.clone()
+            },
+            portal_mensaje_bienvenida: company.portal_mensaje_bienvenida.clone(),
+            portal_whatsapp_soporte: company.portal_whatsapp_soporte.clone(),
         })
     }
 
@@ -2119,6 +2143,15 @@ impl MemoryRepo {
             wompi_public_key: company.wompi_public_key.clone(),
             wompi_sandbox: company.wompi_sandbox,
             wompi_configurado: company.wompi_configurado,
+            portal_logo_url: company.portal_logo_url.clone(),
+            portal_cover_url: company.portal_cover_url.clone(),
+            portal_color_primario: if company.portal_color_primario.trim().is_empty() {
+                "#0F766E".into()
+            } else {
+                company.portal_color_primario.clone()
+            },
+            portal_mensaje_bienvenida: company.portal_mensaje_bienvenida.clone(),
+            portal_whatsapp_soporte: company.portal_whatsapp_soporte.clone(),
             unit_id: unit.id.clone(),
             torre: unit.torre.clone(),
             numero: unit.numero.clone(),

@@ -7,6 +7,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_portal_color() -> String {
+    "#0F766E".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrontendCopropiedad {
     pub id: String,
@@ -44,6 +48,16 @@ pub struct FrontendCopropiedad {
     pub wompi_sandbox: bool,
     #[serde(default, rename = "wompiConfigurado")]
     pub wompi_configurado: bool,
+    #[serde(default, rename = "portalLogoUrl")]
+    pub portal_logo_url: String,
+    #[serde(default, rename = "portalCoverUrl")]
+    pub portal_cover_url: String,
+    #[serde(default = "default_portal_color", rename = "portalColorPrimario")]
+    pub portal_color_primario: String,
+    #[serde(default, rename = "portalMensajeBienvenida")]
+    pub portal_mensaje_bienvenida: String,
+    #[serde(default, rename = "portalWhatsappSoporte")]
+    pub portal_whatsapp_soporte: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -487,6 +501,16 @@ pub struct UpdateCompanySettingsRequest {
     pub wompi_events_secret: Option<String>,
     #[serde(rename = "wompiSandbox", alias = "wompi_sandbox", default)]
     pub wompi_sandbox: Option<bool>,
+    #[serde(rename = "portalLogoUrl", alias = "portal_logo_url", default)]
+    pub portal_logo_url: Option<String>,
+    #[serde(rename = "portalCoverUrl", alias = "portal_cover_url", default)]
+    pub portal_cover_url: Option<String>,
+    #[serde(rename = "portalColorPrimario", alias = "portal_color_primario", default)]
+    pub portal_color_primario: Option<String>,
+    #[serde(rename = "portalMensajeBienvenida", alias = "portal_mensaje_bienvenida", default)]
+    pub portal_mensaje_bienvenida: Option<String>,
+    #[serde(rename = "portalWhatsappSoporte", alias = "portal_whatsapp_soporte", default)]
+    pub portal_whatsapp_soporte: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -650,6 +674,11 @@ pub struct PortalUnitStatement {
     pub wompi_public_key: String,
     pub wompi_sandbox: bool,
     pub wompi_configurado: bool,
+    pub portal_logo_url: String,
+    pub portal_cover_url: String,
+    pub portal_color_primario: String,
+    pub portal_mensaje_bienvenida: String,
+    pub portal_whatsapp_soporte: String,
     pub unit_id: String,
     pub torre: String,
     pub numero: String,

@@ -3359,4 +3359,112 @@ mod tests {
         }
         assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
     }
+
+    #[tokio::test]
+    async fn portal_branding_settings_update_and_validation_work() {
+        let router = app();
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+        let tiny_png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
+
+        // 1. Reject invalid javascript: URL -> 422
+        let bad_url_res = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "portalLogoUrl": "javascript:alert(1)" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_url_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // 2. Reject invalid hex color -> 422
+        let bad_color_res = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "portalColorPrimario": "azul" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad_color_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        // 3. Valid branding update -> 200 and visible on both /portal/company/:slug and /portal/unit/:token
+        let ok_res = router
+            .clone()
+            .oneshot(
+                Request::patch("/api/v1/companies/altavista/settings")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "portalLogoUrl": tiny_png,
+                            "portalCoverUrl": "https://example.com/fachada-altavista.jpg",
+                            "portalColorPrimario": "#1d4ed8",
+                            "portalMensajeBienvenida": "Paga sin filas tu administración.",
+                            "portalWhatsappSoporte": "+57 300 123 4567"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok_res.status(), StatusCode::OK);
+        let ok_body = json_body(ok_res).await;
+        assert_eq!(ok_body["portalColorPrimario"], "#1D4ED8");
+
+        let info_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/portal/company/altavista")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(info_res.status(), StatusCode::OK);
+        let info_body = json_body(info_res).await;
+        assert_eq!(info_body["portalLogoUrl"], tiny_png);
+        assert_eq!(info_body["portalCoverUrl"], "https://example.com/fachada-altavista.jpg");
+        assert_eq!(info_body["portalColorPrimario"], "#1D4ED8");
+        assert_eq!(info_body["portalMensajeBienvenida"], "Paga sin filas tu administración.");
+        assert_eq!(info_body["portalWhatsappSoporte"], "+57 300 123 4567");
+
+        let links_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/altavista/portal-links")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let links_body = json_body(links_res).await;
+        let tok = links_body["links"][0]["token"].as_str().unwrap();
+        let stmt_res = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/portal/unit/{tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stmt_res.status(), StatusCode::OK);
+        let stmt_body = json_body(stmt_res).await;
+        assert_eq!(stmt_body["portalLogoUrl"], tiny_png);
+        assert_eq!(stmt_body["portalColorPrimario"], "#1D4ED8");
+        assert_eq!(stmt_body["portalWhatsappSoporte"], "+57 300 123 4567");
+    }
 }

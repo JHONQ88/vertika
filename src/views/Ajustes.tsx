@@ -5,6 +5,35 @@ import { acciones, exportarEstado, tienePermiso, useAuth } from '../store';
 import type { VistaProps } from '../ui-types';
 import { Badge, Btn, Card, Toggle, ViewHeader } from '../components/ui';
 
+async function compressImageToDataUrl(
+  file: File,
+  maxWidth: number,
+  mimeType: 'image/png' | 'image/jpeg',
+  quality = 0.8,
+): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('No se pudo leer la imagen.'));
+      el.src = objectUrl;
+    });
+    const ratio = img.width > maxWidth ? maxWidth / img.width : 1;
+    const width = Math.max(1, Math.round(img.width * ratio));
+    const height = Math.max(1, Math.round(img.height * ratio));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('No se pudo procesar la imagen en el navegador.');
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL(mimeType, quality);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export function Ajustes(props: VistaProps) {
   const { empresa, estado, toast } = props;
   const auth = useAuth();
@@ -24,6 +53,11 @@ export function Ajustes(props: VistaProps) {
     wompiIntegritySecret: '',
     wompiEventsSecret: '',
     wompiSandbox: empresa.wompiSandbox ?? true,
+    portalLogoUrl: empresa.portalLogoUrl ?? '',
+    portalCoverUrl: empresa.portalCoverUrl ?? '',
+    portalColorPrimario: empresa.portalColorPrimario ?? '#0F766E',
+    portalMensajeBienvenida: empresa.portalMensajeBienvenida ?? '',
+    portalWhatsappSoporte: empresa.portalWhatsappSoporte ?? '',
   });
   const editando = editingCompanyId === empresa.id && puedeEditar;
   const auditoriaEmpresa = estado.auditoria.filter((e) => e.empresaId === empresa.id);
@@ -42,8 +76,42 @@ export function Ajustes(props: VistaProps) {
       wompiIntegritySecret: '',
       wompiEventsSecret: '',
       wompiSandbox: empresa.wompiSandbox ?? true,
+      portalLogoUrl: empresa.portalLogoUrl ?? '',
+      portalCoverUrl: empresa.portalCoverUrl ?? '',
+      portalColorPrimario: empresa.portalColorPrimario ?? '#0F766E',
+      portalMensajeBienvenida: empresa.portalMensajeBienvenida ?? '',
+      portalWhatsappSoporte: empresa.portalWhatsappSoporte ?? '',
     });
     setEditingCompanyId(empresa.id);
+  };
+
+  const subirImagenMarca = async (
+    file: File | null,
+    target: 'portalLogoUrl' | 'portalCoverUrl',
+  ) => {
+    if (!file) return;
+    try {
+      const dataUrl =
+        target === 'portalLogoUrl'
+          ? await compressImageToDataUrl(file, 360, 'image/png', 0.9)
+          : await compressImageToDataUrl(file, 1200, 'image/jpeg', 0.78);
+      if (dataUrl.length > 290_000) {
+        toast({
+          tone: 'error',
+          title: 'Imagen demasiado pesada',
+          msg: 'Usa una imagen más ligera o pega una URL https:// externa.',
+        });
+        return;
+      }
+      setFormEmpresa((prev) => ({ ...prev, [target]: dataUrl }));
+      toast({ tone: 'ok', title: 'Imagen cargada', msg: 'Guarda los cambios para aplicarla en el portal.' });
+    } catch (err: unknown) {
+      toast({
+        tone: 'error',
+        title: 'Error al procesar imagen',
+        msg: err instanceof Error ? err.message : 'Formato inválido.',
+      });
+    }
   };
 
   const guardarParametros = async (e: React.FormEvent) => {
@@ -86,6 +154,11 @@ export function Ajustes(props: VistaProps) {
         wompiIntegritySecret: formEmpresa.wompiIntegritySecret.trim() || undefined,
         wompiEventsSecret: formEmpresa.wompiEventsSecret.trim() || undefined,
         wompiSandbox: formEmpresa.wompiSandbox,
+        portalLogoUrl: formEmpresa.portalLogoUrl.trim(),
+        portalCoverUrl: formEmpresa.portalCoverUrl.trim(),
+        portalColorPrimario: formEmpresa.portalColorPrimario.trim() || '#0F766E',
+        portalMensajeBienvenida: formEmpresa.portalMensajeBienvenida.trim(),
+        portalWhatsappSoporte: formEmpresa.portalWhatsappSoporte.trim(),
       });
       if (res.ok) {
         toast({ tone: 'ok', title: 'Parámetros guardados', msg: res.detalle });
@@ -136,6 +209,13 @@ export function Ajustes(props: VistaProps) {
       valor: empresa.wompiConfigurado
         ? `${empresa.wompiSandbox ? 'Sandbox' : 'Producción'} · ${empresa.wompiPublicKey}`
         : 'Modo pruebas / Bre-B',
+    },
+    {
+      label: 'Portal marca blanca',
+      valor:
+        empresa.portalLogoUrl || empresa.portalCoverUrl || empresa.portalWhatsappSoporte
+          ? `Personalizado · Color ${empresa.portalColorPrimario || '#0F766E'}`
+          : `Estándar · Color ${empresa.portalColorPrimario || '#0F766E'}`,
     },
     { label: 'Presupuesto anual', valor: fmtMoney(empresa.presupuestoAnual) },
   ];
@@ -304,6 +384,163 @@ export function Ajustes(props: VistaProps) {
                     </Btn>
                   </div>
                 </div>
+
+                <div
+                  className="campo"
+                  style={{
+                    gridColumn: '1 / -1',
+                    borderTop: '1px solid #E4E4E7',
+                    paddingTop: 12,
+                    marginTop: 4,
+                  }}
+                >
+                  <strong style={{ fontSize: 13 }}>Marca blanca del Portal de Residentes</strong>
+                  <small style={{ display: 'block', marginTop: 2 }}>
+                    Personaliza el logo, foto de portada, color, mensaje y WhatsApp que ven los residentes al ingresar a pagar.
+                  </small>
+                </div>
+
+                <div className="campo">
+                  <small>Logo del conjunto (URL https:// o archivo PNG/JPG/WebP)</small>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center' }}>
+                    <input
+                      value={formEmpresa.portalLogoUrl}
+                      onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalLogoUrl: e.target.value }))}
+                      placeholder="https://... o sube una imagen"
+                      style={{ flex: 1 }}
+                    />
+                    <label
+                      style={{
+                        border: '1px solid #E4E4E7',
+                        borderRadius: 6,
+                        padding: '6px 10px',
+                        fontSize: 12,
+                        cursor: 'pointer',
+                        background: '#FFFFFF',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Subir
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          void subirImagenMarca(e.target.files?.[0] ?? null, 'portalLogoUrl');
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                    {formEmpresa.portalLogoUrl && (
+                      <Btn
+                        type="button"
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => setFormEmpresa((prev) => ({ ...prev, portalLogoUrl: '' }))}
+                      >
+                        Quitar
+                      </Btn>
+                    )}
+                  </div>
+                  {formEmpresa.portalLogoUrl && (
+                    <img
+                      src={formEmpresa.portalLogoUrl}
+                      alt="Vista previa logo"
+                      style={{ marginTop: 6, maxHeight: 44, maxWidth: 180, objectFit: 'contain', borderRadius: 4 }}
+                    />
+                  )}
+                </div>
+
+                <div className="campo">
+                  <small>Foto de portada del conjunto (URL https:// o archivo JPG/WebP)</small>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 4, alignItems: 'center' }}>
+                    <input
+                      value={formEmpresa.portalCoverUrl}
+                      onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalCoverUrl: e.target.value }))}
+                      placeholder="https://... o sube una foto"
+                      style={{ flex: 1 }}
+                    />
+                    <label
+                      style={{
+                        border: '1px solid #E4E4E7',
+                        borderRadius: 6,
+                        padding: '6px 10px',
+                        fontSize: 12,
+                        cursor: 'pointer',
+                        background: '#FFFFFF',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Subir
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          void subirImagenMarca(e.target.files?.[0] ?? null, 'portalCoverUrl');
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                    </label>
+                    {formEmpresa.portalCoverUrl && (
+                      <Btn
+                        type="button"
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => setFormEmpresa((prev) => ({ ...prev, portalCoverUrl: '' }))}
+                      >
+                        Quitar
+                      </Btn>
+                    )}
+                  </div>
+                  {formEmpresa.portalCoverUrl && (
+                    <img
+                      src={formEmpresa.portalCoverUrl}
+                      alt="Vista previa portada"
+                      style={{ marginTop: 6, height: 52, width: 120, objectFit: 'cover', borderRadius: 4, border: '1px solid #E4E4E7' }}
+                    />
+                  )}
+                </div>
+
+                <label className="campo">
+                  <small>Color primario del portal</small>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 4, alignItems: 'center' }}>
+                    <input
+                      type="color"
+                      value={/^#[0-9a-fA-F]{6}$/.test(formEmpresa.portalColorPrimario) ? formEmpresa.portalColorPrimario : '#0F766E'}
+                      onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalColorPrimario: e.target.value.toUpperCase() }))}
+                      style={{ width: 38, height: 34, padding: 2, border: '1px solid #E4E4E7', borderRadius: 6 }}
+                    />
+                    <input
+                      value={formEmpresa.portalColorPrimario}
+                      onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalColorPrimario: e.target.value }))}
+                      className="mono"
+                      placeholder="#0F766E"
+                      style={{ flex: 1 }}
+                    />
+                  </div>
+                </label>
+
+                <label className="campo">
+                  <small>WhatsApp de soporte al residente</small>
+                  <input
+                    value={formEmpresa.portalWhatsappSoporte}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalWhatsappSoporte: e.target.value }))}
+                    placeholder="Ej. +57 300 123 4567"
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
+
+                <label className="campo" style={{ gridColumn: '1 / -1' }}>
+                  <small>Mensaje de bienvenida del portal (opcional)</small>
+                  <input
+                    value={formEmpresa.portalMensajeBienvenida}
+                    onChange={(e) => setFormEmpresa((prev) => ({ ...prev, portalMensajeBienvenida: e.target.value }))}
+                    placeholder="Consulta tu cuenta de cobro y paga tu administración en línea sin filas."
+                    maxLength={280}
+                    style={{ width: '100%', marginTop: 4 }}
+                  />
+                </label>
               </div>
               <div className="cierre-acciones" style={{ marginTop: 14 }}>
                 <Btn size="sm" variant="ghost" type="button" onClick={() => setEditingCompanyId(null)}>

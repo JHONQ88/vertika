@@ -11,7 +11,7 @@ import {
 } from '../api';
 import { fmtCoef, fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
 import { descargarArchivo, generarCuentaDeCobroHTML, generarPazYSalvoHTML } from '../domain/reports';
-import { Badge, Btn, Logo } from '../components/ui';
+import { Badge, Btn, Logo, Modal } from '../components/ui';
 
 type TurnstileApi = {
   render: (
@@ -50,6 +50,20 @@ export function PortalResidente({
   const [montoParcial, setMontoParcial] = useState('');
   const [aplicarDescuento, setAplicarDescuento] = useState(true);
   const [procesandoPago, setProcesandoPago] = useState(false);
+  const [legalModal, setLegalModal] = useState<'terminos' | 'privacidad' | null>(null);
+
+  const brandColor =
+    (stmt?.portalColorPrimario || companyInfo?.portalColorPrimario || '#0F766E').trim() || '#0F766E';
+  const brandLogoUrl = (stmt?.portalLogoUrl || companyInfo?.portalLogoUrl || '').trim();
+  const brandCoverUrl = (stmt?.portalCoverUrl || companyInfo?.portalCoverUrl || '').trim();
+  const brandWelcome =
+    (stmt?.portalMensajeBienvenida || companyInfo?.portalMensajeBienvenida || '').trim() ||
+    'Realiza pagos de administración de manera segura';
+  const brandWhatsapp = (stmt?.portalWhatsappSoporte || companyInfo?.portalWhatsappSoporte || '').trim();
+  const brandWhatsappDigits = brandWhatsapp.replace(/\D+/g, '');
+  const brandWhatsappHref = brandWhatsappDigits
+    ? `https://wa.me/${brandWhatsappDigits.startsWith('57') ? brandWhatsappDigits : `57${brandWhatsappDigits}`}`
+    : '';
 
   const cargarEstado = useCallback(async (tok: string) => {
     setCargando(true);
@@ -332,6 +346,322 @@ export function PortalResidente({
     );
   };
 
+  const isSplitLogin = !token && Boolean(companySlug) && matchedUnits.length === 0 && !cargando;
+
+  const legalFooter = (
+    <footer
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: 6,
+        paddingTop: 12,
+        fontSize: 12,
+        color: '#52525B',
+        textAlign: 'center',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 99, background: brandColor }} />
+        <span>
+          Pagos seguros con <strong>Vértika</strong> · Propiedad Horizontal Ley 675
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', justifyContent: 'center' }}>
+        <button
+          type="button"
+          onClick={() => setLegalModal('terminos')}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            color: '#52525B',
+            fontSize: 12,
+            cursor: 'pointer',
+            textDecoration: 'underline',
+          }}
+        >
+          Términos y condiciones
+        </button>
+        <button
+          type="button"
+          onClick={() => setLegalModal('privacidad')}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            color: '#52525B',
+            fontSize: 12,
+            cursor: 'pointer',
+            textDecoration: 'underline',
+          }}
+        >
+          Políticas de privacidad
+        </button>
+        {brandWhatsappHref && (
+          <a
+            href={brandWhatsappHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: brandColor, fontWeight: 500, textDecoration: 'underline' }}
+          >
+            Soporte WhatsApp
+          </a>
+        )}
+      </div>
+    </footer>
+  );
+
+  const legalModalNode = (
+    <Modal
+      open={legalModal !== null}
+      onClose={() => setLegalModal(null)}
+      title={legalModal === 'privacidad' ? 'Política de privacidad y tratamiento de datos' : 'Términos y condiciones de recaudo'}
+      subtitle={`${stmt?.razonSocial ?? companyInfo?.razonSocial ?? 'Copropiedad'} · Ley 675 de 2001`}
+    >
+      {legalModal === 'privacidad' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13.5, color: '#27272A', lineHeight: 1.55 }}>
+          <p style={{ margin: 0 }}>
+            De conformidad con la <strong>Ley 1581 de 2012</strong> y el Decreto 1377 de 2013, los datos de identificación y contacto
+            consultados en este portal son tratados exclusivamente para la gestión de cartera, facturación de expensas comunes,
+            emisión de paz y salvos y conciliación de pagos de la copropiedad.
+          </p>
+          <p style={{ margin: 0 }}>
+            Los enlaces personalizados están firmados criptográficamente (HMAC-SHA256) y las transacciones electrónicas se procesan
+            directamente mediante pasarela autorizada (Wompi / PSE / Nequi / Bre-B) sin almacenar números de tarjetas en Vértika.
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13.5, color: '#27272A', lineHeight: 1.55 }}>
+          <p style={{ margin: 0 }}>
+            Este portal permite consultar obligaciones ordinarias y extraordinarias causadas por la administración bajo la{' '}
+            <strong>Ley 675 de 2001</strong>. Los descuentos por pronto pago aplican únicamente hasta el día de corte configurado por
+            la asamblea o consejo de administración.
+          </p>
+          <p style={{ margin: 0 }}>
+            Una vez confirmada la transacción por la entidad recaudadora, el Recibo de Caja (RC) se registra automáticamente en la
+            contabilidad oficial del conjunto y el Paz y Salvo queda habilitado cuando el saldo total sea igual a \$ 0.
+          </p>
+        </div>
+      )}
+    </Modal>
+  );
+
+  if (isSplitLogin) {
+    return (
+      <div
+        className="portal-split"
+        style={{
+          minHeight: '100dvh',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+          background: '#FFFFFF',
+          color: '#111113',
+        }}
+      >
+        <style>{`
+          @media (max-width: 899px) {
+            .portal-split {
+              grid-template-columns: minmax(0, 1fr) !important;
+              background: #F8F8F7 !important;
+            }
+            .portal-split-visual {
+              min-height: 150px !important;
+              padding: 20px 16px !important;
+            }
+            .portal-split-form-col {
+              padding: 18px 14px 36px !important;
+            }
+          }
+        `}</style>
+        <aside
+          className="portal-split-visual"
+          style={{
+            position: 'relative',
+            minHeight: 360,
+            backgroundColor: brandColor,
+            backgroundImage: brandCoverUrl
+              ? `linear-gradient(180deg, rgba(17,17,19,0.28) 0%, rgba(17,17,19,0.72) 100%), url(${brandCoverUrl})`
+              : `linear-gradient(135deg, ${brandColor} 0%, #18181B 100%)`,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            color: '#FFFFFF',
+            padding: '32px 28px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {brandLogoUrl ? (
+              <img
+                src={brandLogoUrl}
+                alt={companyInfo?.nombreCorto ?? 'Copropiedad'}
+                style={{ maxHeight: 40, maxWidth: 160, objectFit: 'contain', background: 'rgba(255,255,255,0.92)', padding: '4px 8px', borderRadius: 6 }}
+              />
+            ) : (
+              <span
+                style={{
+                  display: 'inline-block',
+                  padding: '4px 10px',
+                  borderRadius: 6,
+                  background: 'rgba(255,255,255,0.16)',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  letterSpacing: '0.03em',
+                }}
+              >
+                {companyInfo?.ciudad ? `${companyInfo.ciudad} · Ley 675` : 'Propiedad Horizontal'}
+              </span>
+            )}
+          </div>
+          <div>
+            <div style={{ fontSize: 12, opacity: 0.85, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              {companyInfo ? `NIT ${companyInfo.nit}` : 'Portal de Residentes'}
+            </div>
+            <h2 style={{ margin: '6px 0 4px', fontSize: 26, letterSpacing: '-0.02em', lineHeight: 1.15 }}>
+              {companyInfo?.razonSocial ?? companyInfo?.nombreCorto ?? 'Sistema de Recaudos'}
+            </h2>
+            {companyInfo?.direccion && (
+              <p style={{ margin: 0, fontSize: 13.5, opacity: 0.9 }}>{companyInfo.direccion}</p>
+            )}
+          </div>
+        </aside>
+
+        <main
+          className="portal-split-form-col"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '32px 24px',
+            background: '#FFFFFF',
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              maxWidth: 420,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+              background: '#FFFFFF',
+              borderRadius: 8,
+              padding: 4,
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 8 }}>
+              {brandLogoUrl ? (
+                <img
+                  src={brandLogoUrl}
+                  alt={companyInfo?.nombreCorto ?? 'Logo copropiedad'}
+                  style={{ maxHeight: 54, maxWidth: 200, objectFit: 'contain' }}
+                />
+              ) : (
+                <Logo size={36} />
+              )}
+              <h1 style={{ margin: '4px 0 0', fontSize: 22, letterSpacing: '-0.02em' }}>
+                Bienvenido al Sistema de Recaudos
+              </h1>
+              <p style={{ margin: 0, fontSize: 13.5, color: '#52525B' }}>{brandWelcome}</p>
+            </div>
+
+            {error && (
+              <div
+                style={{
+                  background: '#FEF2F2',
+                  border: '1px solid #EF4444',
+                  color: '#991B1B',
+                  borderRadius: 8,
+                  padding: '10px 14px',
+                  fontSize: 13,
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            <form
+              onSubmit={(e) => void consultarPorDocumento(e)}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+                border: '1px solid #E4E4E7',
+                borderRadius: 8,
+                padding: 18,
+                background: '#FFFFFF',
+              }}
+            >
+              <strong style={{ fontSize: 14 }}>Validación de usuario</strong>
+              <label className="field">
+                <span>Número de documento (Cédula o NIT)</span>
+                <input
+                  required
+                  value={documentoInput}
+                  onChange={(e) => setDocumentoInput(e.target.value)}
+                  placeholder="Sin puntos ni guiones"
+                  autoComplete="off"
+                />
+              </label>
+
+              {mostrarFiltroUnidad && (
+                <label className="field">
+                  <span>Filtrar por unidad o apartamento (opcional)</span>
+                  <input
+                    value={unidadInput}
+                    onChange={(e) => setUnidadInput(e.target.value)}
+                    placeholder="Ej. Torre A 101 o 101"
+                  />
+                </label>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setMostrarFiltroUnidad((v) => !v)}
+                style={{
+                  alignSelf: 'flex-start',
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  color: brandColor,
+                  fontSize: 12.5,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                {mostrarFiltroUnidad ? 'Ocultar filtro de apartamento' : 'Filtrar por apartamento específico'}
+              </button>
+
+              {companyInfo?.turnstileSiteKey && <div ref={turnstileRef} style={{ minHeight: 65 }} />}
+
+              <button
+                type="submit"
+                disabled={buscando}
+                style={{
+                  background: brandColor,
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '10px 14px',
+                  fontSize: 13.5,
+                  fontWeight: 600,
+                  cursor: buscando ? 'wait' : 'pointer',
+                  opacity: buscando ? 0.7 : 1,
+                }}
+              >
+                {buscando ? 'Verificando…' : 'Ingresar al portal'}
+              </button>
+            </form>
+
+            {legalFooter}
+          </div>
+        </main>
+        {legalModalNode}
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: '100dvh', background: '#F8F8F7', color: '#111113', padding: '20px 14px 48px' }}>
       <div style={{ maxWidth: 820, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -349,7 +679,15 @@ export function PortalResidente({
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <Logo size={28} />
+            {brandLogoUrl ? (
+              <img
+                src={brandLogoUrl}
+                alt={stmt?.nombreCorto ?? companyInfo?.nombreCorto ?? 'Logo'}
+                style={{ maxHeight: 34, maxWidth: 120, objectFit: 'contain' }}
+              />
+            ) : (
+              <Logo size={28} />
+            )}
             <div>
               <strong style={{ display: 'block', fontSize: 15, letterSpacing: '-0.02em' }}>
                 {stmt?.nombreCorto ?? companyInfo?.nombreCorto ?? 'Portal de Residentes y Pagos'}
@@ -363,11 +701,32 @@ export function PortalResidente({
               </span>
             </div>
           </div>
-          {stmt && (
-            <Badge tone={stmt.saldoActual <= 0 ? 'ok' : stmt.estadoCartera === 'EN_MORA' ? 'error' : 'warn'}>
-              {stmt.saldoActual <= 0 ? 'Al día' : stmt.estadoCartera === 'EN_MORA' ? 'En mora' : 'Saldo pendiente'}
-            </Badge>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {brandWhatsappHref && (
+              <a
+                href={brandWhatsappHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  border: '1px solid #E4E4E7',
+                  borderRadius: 6,
+                  padding: '5px 10px',
+                  fontSize: 12,
+                  color: brandColor,
+                  fontWeight: 500,
+                  textDecoration: 'none',
+                  background: '#FFFFFF',
+                }}
+              >
+                Ayuda WhatsApp
+              </a>
+            )}
+            {stmt && (
+              <Badge tone={stmt.saldoActual <= 0 ? 'ok' : stmt.estadoCartera === 'EN_MORA' ? 'error' : 'warn'}>
+                {stmt.saldoActual <= 0 ? 'Al día' : stmt.estadoCartera === 'EN_MORA' ? 'En mora' : 'Saldo pendiente'}
+              </Badge>
+            )}
+          </div>
         </header>
 
         {error && (
@@ -745,7 +1104,10 @@ export function PortalResidente({
             </section>
           </>
         )}
+
+        {legalFooter}
       </div>
+      {legalModalNode}
     </div>
   );
 }

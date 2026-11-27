@@ -24,7 +24,8 @@ use crate::repo::{
     compute_unit_portal_figures, default_rubros_for_company, derive_sigla, extract_digits,
     last_day_of_period, next_period_ym, normalize_frontend_lines, normalize_requested_companies,
     normalize_unit_lookup, origin_from_agent, parse_seed_bundle, slugify_company_name,
-    validate_and_hash_frontend_lines, validate_create_pre_entry_input, verify_wompi_event_checksum,
+    validate_and_hash_frontend_lines, validate_create_pre_entry_input, validate_hex_color,
+    validate_portal_image_url, verify_wompi_event_checksum,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rust_decimal::Decimal;
@@ -851,7 +852,12 @@ impl PostgresRepo {
                     periodo_actual, saldos_iniciales, escala, color,
                     COALESCE(wompi_public_key, '') AS wompi_public_key,
                     COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
-                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado,
+                    COALESCE(portal_logo_url, '') AS portal_logo_url,
+                    COALESCE(portal_cover_url, '') AS portal_cover_url,
+                    COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                    COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                    COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte
                FROM copropiedades
               ORDER BY created_at, slug",
         )
@@ -889,6 +895,11 @@ impl PostgresRepo {
                 wompi_public_key: r.try_get("wompi_public_key")?,
                 wompi_sandbox: r.try_get("wompi_sandbox")?,
                 wompi_configurado: r.try_get("wompi_configurado")?,
+                portal_logo_url: r.try_get("portal_logo_url")?,
+                portal_cover_url: r.try_get("portal_cover_url")?,
+                portal_color_primario: r.try_get("portal_color_primario")?,
+                portal_mensaje_bienvenida: r.try_get("portal_mensaje_bienvenida")?,
+                portal_whatsapp_soporte: r.try_get("portal_whatsapp_soporte")?,
             });
         }
 
@@ -2948,6 +2959,11 @@ impl PostgresRepo {
             wompi_public_key: String::new(),
             wompi_sandbox: true,
             wompi_configurado: false,
+            portal_logo_url: String::new(),
+            portal_cover_url: String::new(),
+            portal_color_primario: "#0F766E".into(),
+            portal_mensaje_bienvenida: String::new(),
+            portal_whatsapp_soporte: String::new(),
         };
 
         Ok(CreateCompanyResult {
@@ -3004,7 +3020,12 @@ impl PostgresRepo {
                     COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct, COALESCE(llave_bre_b, '') AS llave_bre_b,
                     color, COALESCE(wompi_public_key, '') AS wompi_public_key,
                     COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
-                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado,
+                    COALESCE(portal_logo_url, '') AS portal_logo_url,
+                    COALESCE(portal_cover_url, '') AS portal_cover_url,
+                    COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                    COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                    COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte
                FROM copropiedades
               WHERE id = $1",
         )
@@ -3035,6 +3056,11 @@ impl PostgresRepo {
             wompi_public_key: comp_meta.try_get("wompi_public_key")?,
             wompi_sandbox: comp_meta.try_get("wompi_sandbox")?,
             wompi_configurado: comp_meta.try_get("wompi_configurado")?,
+            portal_logo_url: comp_meta.try_get("portal_logo_url")?,
+            portal_cover_url: comp_meta.try_get("portal_cover_url")?,
+            portal_color_primario: comp_meta.try_get("portal_color_primario")?,
+            portal_mensaje_bienvenida: comp_meta.try_get("portal_mensaje_bienvenida")?,
+            portal_whatsapp_soporte: comp_meta.try_get("portal_whatsapp_soporte")?,
         };
 
         let unit_rows = sqlx::query(
@@ -3810,6 +3836,27 @@ impl PostgresRepo {
             .wompi_events_secret
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let logo_opt = req
+            .portal_logo_url
+            .as_deref()
+            .map(|v| validate_portal_image_url(v, "Logo del portal"))
+            .transpose()?;
+        let cover_opt = req
+            .portal_cover_url
+            .as_deref()
+            .map(|v| validate_portal_image_url(v, "Foto de portada del portal"))
+            .transpose()?;
+        let color_opt = req
+            .portal_color_primario
+            .as_deref()
+            .map(validate_hex_color)
+            .transpose()?;
+        let welcome_opt = req
+            .portal_mensaje_bienvenida
+            .map(|v| v.trim().chars().take(280).collect::<String>());
+        let wa_opt = req
+            .portal_whatsapp_soporte
+            .map(|v| v.trim().chars().take(40).collect::<String>());
 
         let r = sqlx::query(
             "UPDATE copropiedades
@@ -3823,7 +3870,12 @@ impl PostgresRepo {
                     wompi_public_key = COALESCE($9, wompi_public_key),
                     wompi_integrity_secret = COALESCE($10, wompi_integrity_secret),
                     wompi_events_secret = COALESCE($11, wompi_events_secret),
-                    wompi_sandbox = COALESCE($12, wompi_sandbox)
+                    wompi_sandbox = COALESCE($12, wompi_sandbox),
+                    portal_logo_url = COALESCE($13, portal_logo_url),
+                    portal_cover_url = COALESCE($14, portal_cover_url),
+                    portal_color_primario = COALESCE($15, portal_color_primario),
+                    portal_mensaje_bienvenida = COALESCE($16, portal_mensaje_bienvenida),
+                    portal_whatsapp_soporte = COALESCE($17, portal_whatsapp_soporte)
               WHERE id = $1
              RETURNING nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
                        sigla, ciudad, direccion, grupo_niif,
@@ -3834,7 +3886,12 @@ impl PostgresRepo {
                        presupuesto_anual, periodo_actual, saldos_iniciales, escala, color,
                        COALESCE(wompi_public_key, '') AS wompi_public_key,
                        COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
-                       (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado",
+                       (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado,
+                       COALESCE(portal_logo_url, '') AS portal_logo_url,
+                       COALESCE(portal_cover_url, '') AS portal_cover_url,
+                       COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                       COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                       COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte",
         )
         .bind(company.uuid)
         .bind(req.razon_social)
@@ -3848,6 +3905,11 @@ impl PostgresRepo {
         .bind(int_sec_opt)
         .bind(ev_sec_opt)
         .bind(req.wompi_sandbox)
+        .bind(logo_opt)
+        .bind(cover_opt)
+        .bind(color_opt)
+        .bind(welcome_opt)
+        .bind(wa_opt)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -3880,6 +3942,11 @@ impl PostgresRepo {
             wompi_public_key: r.try_get("wompi_public_key")?,
             wompi_sandbox: r.try_get("wompi_sandbox")?,
             wompi_configurado: r.try_get("wompi_configurado")?,
+            portal_logo_url: r.try_get("portal_logo_url")?,
+            portal_cover_url: r.try_get("portal_cover_url")?,
+            portal_color_primario: r.try_get("portal_color_primario")?,
+            portal_mensaje_bienvenida: r.try_get("portal_mensaje_bienvenida")?,
+            portal_whatsapp_soporte: r.try_get("portal_whatsapp_soporte")?,
         })
     }
 
@@ -3941,7 +4008,12 @@ impl PostgresRepo {
         let company = Self::resolve_company_tx(&mut tx, slug.trim()).await?;
         let meta = sqlx::query(
             "SELECT nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
-                    ciudad, direccion
+                    ciudad, direccion,
+                    COALESCE(portal_logo_url, '') AS portal_logo_url,
+                    COALESCE(portal_cover_url, '') AS portal_cover_url,
+                    COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                    COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                    COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte
                FROM copropiedades
               WHERE id = $1",
         )
@@ -3964,11 +4036,11 @@ impl PostgresRepo {
             direccion: meta.try_get("direccion")?,
             periodo_actual: company.periodo_actual,
             turnstile_site_key,
-            portal_logo_url: String::new(),
-            portal_cover_url: String::new(),
-            portal_color_primario: "#0F766E".into(),
-            portal_mensaje_bienvenida: String::new(),
-            portal_whatsapp_soporte: String::new(),
+            portal_logo_url: meta.try_get("portal_logo_url")?,
+            portal_cover_url: meta.try_get("portal_cover_url")?,
+            portal_color_primario: meta.try_get("portal_color_primario")?,
+            portal_mensaje_bienvenida: meta.try_get("portal_mensaje_bienvenida")?,
+            portal_whatsapp_soporte: meta.try_get("portal_whatsapp_soporte")?,
         })
     }
 
@@ -4107,6 +4179,11 @@ impl PostgresRepo {
             wompi_public_key: String::new(),
             wompi_sandbox: true,
             wompi_configurado: false,
+            portal_logo_url: String::new(),
+            portal_cover_url: String::new(),
+            portal_color_primario: "#0F766E".into(),
+            portal_mensaje_bienvenida: String::new(),
+            portal_whatsapp_soporte: String::new(),
         };
         let entries = self.load_entries_query(Some(company.uuid), None).await?;
 
@@ -4149,7 +4226,12 @@ impl PostgresRepo {
                     COALESCE(wompi_public_key, '') AS wompi_public_key,
                     COALESCE(wompi_integrity_secret, '') AS wompi_integrity_secret,
                     COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
-                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado,
+                    COALESCE(portal_logo_url, '') AS portal_logo_url,
+                    COALESCE(portal_cover_url, '') AS portal_cover_url,
+                    COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                    COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                    COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte
                FROM copropiedades
               WHERE id = $1",
         )
@@ -4182,6 +4264,11 @@ impl PostgresRepo {
             wompi_public_key: comp_meta.try_get("wompi_public_key")?,
             wompi_sandbox: comp_meta.try_get("wompi_sandbox")?,
             wompi_configurado: comp_meta.try_get("wompi_configurado")?,
+            portal_logo_url: comp_meta.try_get("portal_logo_url")?,
+            portal_cover_url: comp_meta.try_get("portal_cover_url")?,
+            portal_color_primario: comp_meta.try_get("portal_color_primario")?,
+            portal_mensaje_bienvenida: comp_meta.try_get("portal_mensaje_bienvenida")?,
+            portal_whatsapp_soporte: comp_meta.try_get("portal_whatsapp_soporte")?,
         };
 
         let unit_row = sqlx::query(
@@ -4299,6 +4386,11 @@ impl PostgresRepo {
             wompi_public_key: company.wompi_public_key,
             wompi_sandbox: company.wompi_sandbox,
             wompi_configurado: company.wompi_configurado,
+            portal_logo_url: company.portal_logo_url,
+            portal_cover_url: company.portal_cover_url,
+            portal_color_primario: company.portal_color_primario,
+            portal_mensaje_bienvenida: company.portal_mensaje_bienvenida,
+            portal_whatsapp_soporte: company.portal_whatsapp_soporte,
             unit_id: unit.id,
             torre: unit.torre,
             numero: unit.numero,

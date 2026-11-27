@@ -558,6 +558,11 @@ export interface UpdateCompanySettingsPayload
       | 'llaveBreB'
       | 'wompiPublicKey'
       | 'wompiSandbox'
+      | 'portalLogoUrl'
+      | 'portalCoverUrl'
+      | 'portalColorPrimario'
+      | 'portalMensajeBienvenida'
+      | 'portalWhatsappSoporte'
     >
   > {
   wompiIntegritySecret?: string;
@@ -624,6 +629,11 @@ export interface PortalUnitStatement {
   wompiPublicKey: string;
   wompiSandbox: boolean;
   wompiConfigurado: boolean;
+  portalLogoUrl?: string;
+  portalCoverUrl?: string;
+  portalColorPrimario?: string;
+  portalMensajeBienvenida?: string;
+  portalWhatsappSoporte?: string;
   unitId: string;
   torre: string;
   numero: string;

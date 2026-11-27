@@ -1031,6 +1031,53 @@ pub fn extract_digits(raw: &str) -> String {
     raw.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
+pub fn validate_portal_image_url(raw: &str, label: &str) -> Result<String, ApiError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        if rest.is_empty() || trimmed.len() > 2048 || trimmed.chars().any(char::is_whitespace) {
+            return Err(ApiError::unprocessable(format!(
+                "{label} debe ser una URL https:// válida sin espacios."
+            )));
+        }
+        return Ok(trimmed.to_string());
+    }
+    let allowed_data = trimmed.starts_with("data:image/png;base64,")
+        || trimmed.starts_with("data:image/jpeg;base64,")
+        || trimmed.starts_with("data:image/webp;base64,");
+    if allowed_data {
+        if trimmed.len() > 300_000 {
+            return Err(ApiError::unprocessable(format!(
+                "{label} supera el tamaño máximo permitido (300 KB)."
+            )));
+        }
+        return Ok(trimmed.to_string());
+    }
+    Err(ApiError::unprocessable(format!(
+        "{label} debe ser una URL https:// o imagen PNG/JPEG/WebP válida."
+    )))
+}
+
+pub fn validate_hex_color(raw: &str) -> Result<String, ApiError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok("#0F766E".into());
+    }
+    let Some(hex) = trimmed.strip_prefix('#') else {
+        return Err(ApiError::unprocessable(
+            "El color primario debe tener formato hexadecimal #RRGGBB.",
+        ));
+    };
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(ApiError::unprocessable(
+            "El color primario debe tener formato hexadecimal #RRGGBB.",
+        ));
+    }
+    Ok(format!("#{}", hex.to_ascii_uppercase()))
+}
+
 pub fn normalize_unit_lookup(raw: &str) -> String {
     raw.trim()
         .to_ascii_uppercase()

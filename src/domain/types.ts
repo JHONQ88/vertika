@@ -51,6 +51,11 @@ export interface Copropiedad {
   wompiPublicKey?: string;
   wompiSandbox?: boolean;
   wompiConfigurado?: boolean;
+  portalLogoUrl?: string;
+  portalCoverUrl?: string;
+  portalColorPrimario?: string;
+  portalMensajeBienvenida?: string;
+  portalWhatsappSoporte?: string;
 }
 
 export interface Unidad {
