@@ -440,7 +440,7 @@ export function PortalResidente({
           </p>
           <p style={{ margin: 0 }}>
             Una vez confirmada la transacción por la entidad recaudadora, el Recibo de Caja (RC) se registra automáticamente en la
-            contabilidad oficial del conjunto y el Paz y Salvo queda habilitado cuando el saldo total sea igual a \$ 0.
+            contabilidad oficial del conjunto y el Paz y Salvo queda habilitado cuando el saldo total sea igual a $ 0.
           </p>
         </div>
       )}
