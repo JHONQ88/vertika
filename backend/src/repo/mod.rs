@@ -7,15 +7,17 @@ use crate::auth::{
 };
 use crate::domain::{
     ledger::{self, CARTERA_ACCOUNTS},
-    ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, ClosePeriodRequest,
-    ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest,
-    CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
-    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
-    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
-    PortalCheckoutResponse, PortalCompanyPublicInfo, PortalLookupRequest, PortalLookupResponse,
-    PortalMovimientoItem, PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
-    UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
+    ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos, BulkImportUnitsRequest,
+    BulkImportUnitsResult, ClosePeriodRequest, ClosePeriodResult, CopyThirdPartiesRequest,
+    CopyThirdPartiesResult, CreateCompanyRequest, CreateCompanyResult, CreateEntryRequest,
+    CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria,
+    FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento,
+    FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult,
+    PortalCheckoutRequest, PortalCheckoutResponse, PortalCompanyPublicInfo,
+    PortalEmailDispatchItem, PortalEmailTarget, PortalLookupRequest, PortalLookupResponse,
+    PortalMovimientoItem, PortalUnitLinkItem, PortalUnitStatement, PostEntryResult,
+    RecordPortalDispatchInput, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
+    UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use chrono::{Datelike, NaiveDate, Utc};
@@ -466,6 +468,60 @@ impl Store {
                 )
                 .await
             }
+        }
+    }
+
+    pub async fn bulk_import_units(
+        &self,
+        company_id: &str,
+        req: BulkImportUnitsRequest,
+        actor: &str,
+    ) -> Result<BulkImportUnitsResult, ApiError> {
+        match self {
+            Store::Memory(r) => r.bulk_import_units(company_id, req, actor).await,
+            Store::Postgres(r) => r.bulk_import_units(company_id, req, actor).await,
+        }
+    }
+
+    pub async fn list_portal_email_targets(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+        solo_con_saldo: bool,
+        unit_ids: &[String],
+    ) -> Result<(FrontendCopropiedad, String, Vec<PortalEmailTarget>), ApiError> {
+        match self {
+            Store::Memory(r) => {
+                r.list_portal_email_targets(company_id, periodo, solo_con_saldo, unit_ids)
+                    .await
+            }
+            Store::Postgres(r) => {
+                r.list_portal_email_targets(company_id, periodo, solo_con_saldo, unit_ids)
+                    .await
+            }
+        }
+    }
+
+    pub async fn record_portal_dispatches(
+        &self,
+        company_id: &str,
+        items: Vec<RecordPortalDispatchInput>,
+        actor: &str,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        match self {
+            Store::Memory(r) => r.record_portal_dispatches(company_id, items, actor).await,
+            Store::Postgres(r) => r.record_portal_dispatches(company_id, items, actor).await,
+        }
+    }
+
+    pub async fn list_portal_dispatches(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        match self {
+            Store::Memory(r) => r.list_portal_dispatches(company_id, periodo).await,
+            Store::Postgres(r) => r.list_portal_dispatches(company_id, periodo).await,
         }
     }
 

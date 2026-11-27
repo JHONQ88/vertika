@@ -19,9 +19,10 @@ use axum::{
 use db::Db;
 use domain::{
     ledger::{self, EntryDraft, PreEntryDraft},
-    BalanceRequest, BillPeriodRequest, ClosePeriodRequest, CopyThirdPartiesRequest,
-    CreateCompanyRequest, CreateEntryRequest, CreatePreEntryRequest, CreatePucAccountRequest,
-    Health, LedgerAccount, PortalCheckoutRequest, PortalLookupRequest,
+    BalanceRequest, BillPeriodRequest, BulkImportUnitsRequest, ClosePeriodRequest,
+    CopyThirdPartiesRequest, CreateCompanyRequest, CreateEntryRequest, CreatePreEntryRequest,
+    CreatePucAccountRequest, Health, LedgerAccount, PortalCheckoutRequest, PortalLookupRequest,
+    RecordPortalDispatchInput, SendPortalEmailsRequest, SendPortalEmailsResult,
     UpdateCompanySettingsRequest, UpdatePreEntryLinesRequest, UpdateRubroBudgetRequest,
     UpsertThirdPartyRequest, UpsertUnitRequest, ValidationResult, VoidEntryRequest,
 };
@@ -194,6 +195,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/companies/:company_id/units", post(create_unit))
         .route(
+            "/api/v1/companies/:company_id/units/import-batch",
+            post(bulk_import_units),
+        )
+        .route(
             "/api/v1/companies/:company_id/units/:unit_id",
             put(update_unit),
         )
@@ -221,6 +226,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/companies/:company_id/portal-links",
             get(company_portal_links),
+        )
+        .route(
+            "/api/v1/companies/:company_id/portal-links/send-emails",
+            post(send_company_portal_emails),
+        )
+        .route(
+            "/api/v1/companies/:company_id/portal-links/dispatches",
+            get(list_company_portal_dispatches),
         )
         // Portal público de propietarios/inquilinos y Webhook Wompi
         .route("/api/v1/portal/company/:slug", get(portal_company_info))
@@ -964,6 +977,327 @@ async fn company_portal_links(
     ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
     let links = state.store.list_portal_links(&company_id).await?;
     Ok(Json(json!({ "links": links })))
+}
+
+async fn bulk_import_units(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<BulkImportUnitsRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let res = state
+        .store
+        .bulk_import_units(&company_id, req, &ctx.actor_label())
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(res).unwrap_or_else(|_| json!({}))),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct DispatchesQuery {
+    #[serde(default)]
+    periodo: Option<String>,
+}
+
+async fn list_company_portal_dispatches(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Query(q): Query<DispatchesQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+    let items = state
+        .store
+        .list_portal_dispatches(&company_id, q.periodo.as_deref())
+        .await?;
+    Ok(Json(json!({ "dispatches": items })))
+}
+
+fn format_cop_amount(val: rust_decimal::Decimal) -> String {
+    let rounded = val.round_dp(0).to_string();
+    let neg = rounded.starts_with('-');
+    let digits = rounded.trim_start_matches('-');
+    let mut rev = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            rev.push('.');
+        }
+        rev.push(ch);
+    }
+    let formatted: String = rev.chars().rev().collect();
+    if neg {
+        format!("-${formatted}")
+    } else {
+        format!("${formatted}")
+    }
+}
+
+fn esc_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+async fn send_company_portal_emails(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(company_id): Path<String>,
+    Json(req): Json<SendPortalEmailsRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let ctx = auth::extract_auth(&headers, state.auth_required)?;
+    ctx.require_company_roles(&company_id, &[Role::Contador, Role::Administrador])?;
+
+    let (company, target_periodo, targets) = state
+        .store
+        .list_portal_email_targets(
+            &company_id,
+            req.periodo.as_deref(),
+            req.solo_con_saldo,
+            &req.unit_ids,
+        )
+        .await?;
+
+    let base_url = req
+        .portal_base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let effective_base = if base_url.starts_with("https://") || base_url.starts_with("http://") {
+        base_url
+    } else {
+        "https://vertika-lac.vercel.app".to_string()
+    };
+
+    let resend_key = std::env::var("RESEND_API_KEY")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let from_email = std::env::var("RESEND_FROM_EMAIL")
+        .unwrap_or_else(|_| "Vértika Cobros <cobros@vertika.co>".into())
+        .trim()
+        .to_string();
+    let live_resend = !req.dry_run && !resend_key.is_empty();
+    let modo = if live_resend { "RESEND" } else { "SIMULADO" }.to_string();
+
+    let client = if live_resend {
+        Some(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(12))
+                .build()
+                .map_err(|_| ApiError::Internal("No fue posible inicializar cliente HTTP.".into()))?,
+        )
+    } else {
+        None
+    };
+
+    let brand_color = if company.portal_color_primario.trim().is_empty() {
+        "#0F766E"
+    } else {
+        company.portal_color_primario.trim()
+    };
+
+    let mut env_inputs = Vec::with_capacity(targets.len());
+    let mut enviados = 0usize;
+    let mut simulados = 0usize;
+    let mut omitidos_sin_correo = 0usize;
+    let mut errores = 0usize;
+
+    for (idx, t) in targets.iter().enumerate() {
+        let email = t.email.trim();
+        if email.is_empty() || !email.contains('@') {
+            omitidos_sin_correo += 1;
+            env_inputs.push(RecordPortalDispatchInput {
+                periodo: target_periodo.clone(),
+                unit_id: t.unit_id.clone(),
+                torre: t.torre.clone(),
+                numero: t.numero.clone(),
+                email_destino: String::new(),
+                estado: "OMITIDO".into(),
+                proveedor_id: None,
+                detalle_error: Some("Sin correo registrado para la unidad.".into()),
+            });
+            continue;
+        }
+
+        let pay_url = format!(
+            "{}/pagar/{}",
+            effective_base,
+            repo::url_encode_component(&t.token)
+        );
+
+        if let Some(http) = &client {
+            if idx > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            }
+            let subject = format!(
+                "Cuenta de cobro {} · {} {} · {}",
+                target_periodo, t.torre, t.numero, company.nombre_corto
+            );
+            let pronto_block = if t.descuento_pronto_pago > rust_decimal::Decimal::ZERO {
+                format!(
+                    "<p style=\"margin:6px 0;font-size:14px;color:#0F766E;\"><strong>Pronto pago (hasta día {}): {}</strong> (ahorro {})</p>",
+                    company.dia_corte_pronto_pago,
+                    format_cop_amount(t.total_con_descuento),
+                    format_cop_amount(t.descuento_pronto_pago)
+                )
+            } else {
+                String::new()
+            };
+            let bre_block = if !company.llave_bre_b.trim().is_empty() {
+                format!(
+                    "<p style=\"margin:12px 0 0;font-size:13px;color:#52525B;\">También puedes transferir con <strong>Llave Bre-B:</strong> <code>{}</code></p>",
+                    esc_html(company.llave_bre_b.trim())
+                )
+            } else {
+                String::new()
+            };
+            let html = format!(
+                "<div style=\"font-family:Inter,Arial,sans-serif;background:#F8F8F7;padding:24px;color:#111113;\">\
+                  <div style=\"max-width:560px;margin:0 auto;background:#FFFFFF;border:1px solid #E4E4E7;border-radius:8px;padding:24px;\">\
+                    <div style=\"font-size:12px;color:#52525B;text-transform:uppercase;\">{} · NIT {}</div>\
+                    <h2 style=\"margin:6px 0 12px;font-size:20px;\">Cuenta de cobro {} · {} {}</h2>\
+                    <p style=\"margin:0 0 12px;font-size:14px;\">Hola {},</p>\
+                    <p style=\"margin:0 0 12px;font-size:14px;\">Ya está disponible tu estado de cuenta de administración correspondiente al periodo <strong>{}</strong>:</p>\
+                    <div style=\"background:#F8F8F7;border:1px solid #E4E4E7;border-radius:8px;padding:14px;margin:14px 0;\">\
+                      <div style=\"font-size:12px;color:#52525B;\">Saldo total a pagar</div>\
+                      <div style=\"font-size:24px;font-weight:700;\">{}</div>\
+                      <div style=\"font-size:13px;color:#52525B;margin-top:4px;\">Cuota mensual: {}</div>\
+                      {}\
+                    </div>\
+                    <a href=\"{}\" style=\"display:inline-block;background:{};color:#FFFFFF;text-decoration:none;font-weight:600;padding:12px 18px;border-radius:6px;font-size:14px;\">Ver cuenta de cobro y pagar en línea</a>\
+                    {}\
+                  </div>\
+                </div>",
+                esc_html(&company.razon_social),
+                esc_html(&company.nit),
+                esc_html(&target_periodo),
+                esc_html(&t.torre),
+                esc_html(&t.numero),
+                esc_html(&t.destinatario_nombre),
+                esc_html(&target_periodo),
+                format_cop_amount(t.saldo_actual),
+                format_cop_amount(t.cuota_mensual),
+                pronto_block,
+                esc_html(&pay_url),
+                esc_html(brand_color),
+                bre_block
+            );
+
+            let resp = http
+                .post("https://api.resend.com/emails")
+                .bearer_auth(&resend_key)
+                .json(&json!({
+                    "from": from_email,
+                    "to": [email],
+                    "subject": subject,
+                    "html": html,
+                }))
+                .send()
+                .await;
+
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let body_val: Value = r.json().await.unwrap_or_else(|_| json!({}));
+                    let prov_id = body_val
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    enviados += 1;
+                    env_inputs.push(RecordPortalDispatchInput {
+                        periodo: target_periodo.clone(),
+                        unit_id: t.unit_id.clone(),
+                        torre: t.torre.clone(),
+                        numero: t.numero.clone(),
+                        email_destino: email.to_string(),
+                        estado: "ENVIADO".into(),
+                        proveedor_id: prov_id,
+                        detalle_error: None,
+                    });
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    let err_txt = r.text().await.unwrap_or_default();
+                    errores += 1;
+                    env_inputs.push(RecordPortalDispatchInput {
+                        periodo: target_periodo.clone(),
+                        unit_id: t.unit_id.clone(),
+                        torre: t.torre.clone(),
+                        numero: t.numero.clone(),
+                        email_destino: email.to_string(),
+                        estado: "ERROR".into(),
+                        proveedor_id: None,
+                        detalle_error: Some(format!("Resend HTTP {status}: {}", err_txt.chars().take(180).collect::<String>())),
+                    });
+                }
+                Err(err) => {
+                    errores += 1;
+                    env_inputs.push(RecordPortalDispatchInput {
+                        periodo: target_periodo.clone(),
+                        unit_id: t.unit_id.clone(),
+                        torre: t.torre.clone(),
+                        numero: t.numero.clone(),
+                        email_destino: email.to_string(),
+                        estado: "ERROR".into(),
+                        proveedor_id: None,
+                        detalle_error: Some(err.to_string().chars().take(180).collect()),
+                    });
+                }
+            }
+        } else {
+            simulados += 1;
+            env_inputs.push(RecordPortalDispatchInput {
+                periodo: target_periodo.clone(),
+                unit_id: t.unit_id.clone(),
+                torre: t.torre.clone(),
+                numero: t.numero.clone(),
+                email_destino: email.to_string(),
+                estado: "SIMULADO".into(),
+                proveedor_id: None,
+                detalle_error: Some(format!("Link listo: {pay_url}")),
+            });
+        }
+    }
+
+    let detalles = if req.dry_run {
+        let now = chrono::Utc::now().to_rfc3339();
+        env_inputs
+            .into_iter()
+            .enumerate()
+            .map(|(i, it)| domain::PortalEmailDispatchItem {
+                id: format!("preview-{i}"),
+                periodo: it.periodo,
+                unit_id: it.unit_id,
+                torre: it.torre,
+                numero: it.numero,
+                email_destino: it.email_destino,
+                estado: it.estado,
+                detalle_error: it.detalle_error,
+                created_at: now.clone(),
+            })
+            .collect()
+    } else {
+        state
+            .store
+            .record_portal_dispatches(&company_id, env_inputs, &ctx.actor_label())
+            .await?
+    };
+
+    let result = SendPortalEmailsResult {
+        modo,
+        enviados,
+        simulados,
+        omitidos_sin_correo,
+        errores,
+        detalles,
+    };
+    Ok(Json(serde_json::to_value(result).unwrap_or_else(|_| json!({}))))
 }
 
 async fn portal_company_info(
@@ -3466,5 +3800,108 @@ mod tests {
         assert_eq!(stmt_body["portalLogoUrl"], tiny_png);
         assert_eq!(stmt_body["portalColorPrimario"], "#1D4ED8");
         assert_eq!(stmt_body["portalWhatsappSoporte"], "+57 300 123 4567");
+    }
+
+    #[tokio::test]
+    async fn bulk_import_units_creates_owners_and_is_idempotent() {
+        let router = app();
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+
+        let rows: Vec<Value> = (1..=50)
+            .map(|i| {
+                let doc = format!("900880{:03}", (i - 1) / 2 + 1);
+                json!({
+                    "torre": if i <= 25 { "Torre Lote A" } else { "Torre Lote B" },
+                    "numero": format!("{}", 1000 + i),
+                    "tipo": "APARTAMENTO",
+                    "area": 68,
+                    "coeficiente": 0.25,
+                    "matricula": format!("50N-88{:04}", i),
+                    "propietarioNombre": format!("Propietario Lote {}", (i - 1) / 2 + 1),
+                    "propietarioDocumento": doc,
+                    "propietarioEmail": format!("prop{}@ejemplo.co", (i - 1) / 2 + 1),
+                    "propietarioTelefono": "3001112233"
+                })
+            })
+            .collect();
+
+        let res1 = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/units/import-batch")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "rows": rows }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::CREATED);
+        let b1 = json_body(res1).await;
+        assert_eq!(b1["creadas"].as_u64().unwrap(), 50);
+        assert_eq!(b1["omitidas"].as_u64().unwrap(), 0);
+        assert_eq!(b1["propietariosCreados"].as_u64().unwrap(), 25);
+
+        // Re-import the exact same 50 rows -> idempotent (0 created, 50 skipped)
+        let res2 = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/units/import-batch")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "rows": rows }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::CREATED);
+        let b2 = json_body(res2).await;
+        assert_eq!(b2["creadas"].as_u64().unwrap(), 0);
+        assert_eq!(b2["omitidas"].as_u64().unwrap(), 50);
+    }
+
+    #[tokio::test]
+    async fn send_portal_emails_filters_balance_and_logs_dispatches() {
+        let router = app();
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+
+        let res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/portal-links/send-emails")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "soloConSaldo": true,
+                            "portalBaseUrl": "https://vertika-lac.vercel.app",
+                            "dryRun": false
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["modo"], "SIMULADO");
+        assert!(body["simulados"].as_u64().unwrap() > 0);
+        let detalles = body["detalles"].as_array().unwrap();
+        assert!(!detalles.is_empty());
+
+        let hist_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/companies/altavista/portal-links/dispatches")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hist_res.status(), StatusCode::OK);
+        let hist_body = json_body(hist_res).await;
+        assert!(!hist_body["dispatches"].as_array().unwrap().is_empty());
     }
 }

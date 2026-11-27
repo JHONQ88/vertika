@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import { apiEnabled, fetchPortalLinksApi, type PortalUnitLinkItem } from '../api';
+import {
+  apiEnabled,
+  fetchPortalDispatchesApi,
+  fetchPortalLinksApi,
+  sendPortalEmailsApi,
+  type PortalEmailDispatchItem,
+  type PortalUnitLinkItem,
+  type SendPortalEmailsResult,
+} from '../api';
 import { cartera } from '../domain/engine';
 import { cuotaMensual } from '../domain/seed';
 import { descargarArchivo, generarCuentaDeCobroHTML, generarPazYSalvoHTML } from '../domain/reports';
@@ -32,11 +40,18 @@ export function Cartera(props: VistaProps) {
   const [rcRef, setRcRef] = useState('');
   const [rcGuardando, setRcGuardando] = useState(false);
 
-  // Links personalizados / WhatsApp / Cuenta de cobro
+  // Links personalizados / WhatsApp / Cuenta de cobro / Envío masivo
   const [linksCache, setLinksCache] = useState<Record<string, PortalUnitLinkItem>>({});
   const [cobroModalFila, setCobroModalFila] = useState<(typeof filas)[number] | null>(null);
   const [cobroLinkUrl, setCobroLinkUrl] = useState('');
   const [cargandoLink, setCargandoLink] = useState(false);
+  const [exportandoLinks, setExportandoLinks] = useState(false);
+  const [modalEnvioMasivo, setModalEnvioMasivo] = useState(false);
+  const [soloConSaldoMasivo, setSoloConSaldoMasivo] = useState(true);
+  const [enviandoMasivo, setEnviandoMasivo] = useState(false);
+  const [resultadoMasivo, setResultadoMasivo] = useState<SendPortalEmailsResult | null>(null);
+  const [historialEnvios, setHistorialEnvios] = useState<PortalEmailDispatchItem[]>([]);
+  const [cargandoHistorial, setCargandoHistorial] = useState(false);
 
   const filas = useMemo(
     () => cartera(estado.comprobantes, empresa, DATOS.units.filter((u) => u.empresaId === empresa.id), DATOS.terceros, estado.periodo),
@@ -138,6 +153,113 @@ export function Cartera(props: VistaProps) {
     const url = `${window.location.origin}/portal/${encodeURIComponent(empresa.id)}`;
     void navigator.clipboard?.writeText(url);
     toast({ tone: 'ok', title: 'Enlace del portal copiado', msg: url });
+  };
+
+  const exportarLinksCsv = async () => {
+    if (!apiEnabled) {
+      toast({ tone: 'error', title: 'Requiere conexión API', msg: 'Conecta el servidor para firmar los enlaces de pago.' });
+      return;
+    }
+    setExportandoLinks(true);
+    try {
+      const links = await fetchPortalLinksApi(empresa.id);
+      const nextMap: Record<string, PortalUnitLinkItem> = {};
+      for (const item of links) nextMap[item.unitId] = item;
+      setLinksCache(nextMap);
+
+      const generalUrl = `${window.location.origin}/portal/${encodeURIComponent(empresa.id)}`;
+      const rows = filtradas.map((f) => {
+        const linkItem = nextMap[f.unidad.id];
+        const payUrl = linkItem
+          ? `${window.location.origin}/pagar/${encodeURIComponent(linkItem.token)}`
+          : generalUrl;
+        const dest = f.arrendatario ?? f.propietario;
+        return [
+          f.unidad.torre,
+          f.unidad.numero,
+          dest?.nombre ?? f.propietario?.nombre ?? '',
+          dest?.documento ?? f.propietario?.documento ?? '',
+          dest?.email ?? f.propietario?.email ?? '',
+          dest?.telefono ?? f.propietario?.telefono ?? '',
+          cuotaMensual(empresa, f.unidad),
+          f.saldo,
+          f.estado,
+          payUrl,
+          generalUrl,
+        ];
+      });
+      const header = [
+        'Torre',
+        'Unidad',
+        'Propietario / Pagador',
+        'Documento',
+        'Correo',
+        'Teléfono',
+        'Cuota',
+        'Saldo pendiente',
+        'Estado',
+        'Link personalizado',
+        'Portal del conjunto',
+      ];
+      const csv = [header, ...rows]
+        .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+        .join('\n');
+      descargarArchivo(`links-pago-${empresa.id}-${estado.periodo}.csv`, `\uFEFF${csv}`, 'text/csv;charset=utf-8');
+      toast({ tone: 'ok', title: 'Links exportados', msg: `${rows.length} unidades con enlace listo para campaña` });
+    } catch (e: unknown) {
+      toast({ tone: 'error', title: 'No se pudieron exportar los links', msg: e instanceof Error ? e.message : 'Error de red' });
+    } finally {
+      setExportandoLinks(false);
+    }
+  };
+
+  const abrirEnvioMasivo = async () => {
+    setModalEnvioMasivo(true);
+    setResultadoMasivo(null);
+    if (!apiEnabled) return;
+    setCargandoHistorial(true);
+    try {
+      const items = await fetchPortalDispatchesApi(empresa.id, estado.periodo);
+      setHistorialEnvios(items);
+    } catch {
+      setHistorialEnvios([]);
+    } finally {
+      setCargandoHistorial(false);
+    }
+  };
+
+  const ejecutarEnvioMasivo = async (dryRun: boolean) => {
+    if (!apiEnabled) {
+      toast({ tone: 'error', title: 'Requiere conexión API', msg: 'Conecta el servidor para enviar correos masivos.' });
+      return;
+    }
+    setEnviandoMasivo(true);
+    try {
+      const res = await sendPortalEmailsApi(empresa.id, {
+        periodo: estado.periodo,
+        soloConSaldo: soloConSaldoMasivo,
+        portalBaseUrl: window.location.origin,
+        dryRun,
+      });
+      setResultadoMasivo(res);
+      if (!dryRun) {
+        const items = await fetchPortalDispatchesApi(empresa.id, estado.periodo);
+        setHistorialEnvios(items);
+      }
+      toast({
+        tone: res.errores > 0 && res.enviados === 0 ? 'error' : 'ok',
+        title: dryRun
+          ? 'Vista previa lista'
+          : res.modo === 'RESEND'
+            ? 'Envío masivo ejecutado'
+            : 'Simulación completada',
+        msg: `${res.enviados} enviados · ${res.simulados} simulados · ${res.omitidosSinCorreo} sin correo`,
+      });
+    } catch (e: unknown) {
+      toast({ tone: 'error', title: 'No se pudo ejecutar el envío', msg: e instanceof Error ? e.message : 'Error' });
+    } finally {
+      setEnviandoMasivo(false);
+    }
   };
 
   const abrirModalRc = (f: (typeof filas)[number]) => {
@@ -322,6 +444,20 @@ export function Cartera(props: VistaProps) {
             <Btn size="sm" variant="outline" icon="nfc" onClick={copiarEnlacePortalGeneral}>
               Portal residentes
             </Btn>
+            <Btn
+              size="sm"
+              variant="outline"
+              icon="download"
+              onClick={() => void exportarLinksCsv()}
+              disabled={filtradas.length === 0 || exportandoLinks}
+            >
+              {exportandoLinks ? 'Exportando…' : 'Exportar links (CSV)'}
+            </Btn>
+            {puedeCausar && (
+              <Btn size="sm" variant="outline" icon="arrowRight" onClick={() => void abrirEnvioMasivo()} disabled={filas.length === 0}>
+                Envío masivo (Email)
+              </Btn>
+            )}
             <Btn size="sm" icon="download" onClick={exportar} disabled={filtradas.length === 0}>
               Exportar CSV
             </Btn>
@@ -633,6 +769,128 @@ export function Cartera(props: VistaProps) {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={modalEnvioMasivo}
+        onClose={() => {
+          if (!enviandoMasivo) setModalEnvioMasivo(false);
+        }}
+        title="Envío masivo de cuentas de cobro por correo"
+        subtitle={`${empresa.nombreCorto} · ${fmtPeriodo(estado.periodo)}`}
+        width={640}
+      >
+        {(() => {
+          const objetivo = soloConSaldoMasivo ? filas.filter((f) => f.saldo > 0) : filas;
+          const conCorreo = objetivo.filter((f) => ((f.arrendatario ?? f.propietario)?.email ?? '').includes('@')).length;
+          const sinCorreo = objetivo.length - conCorreo;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div className="stat-grid">
+                <div className="stat">
+                  <div className="stat-head"><span>Unidades objetivo</span></div>
+                  <div className="stat-value mono">{objetivo.length}</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-head"><span>Con correo válido</span></div>
+                  <div className="stat-value mono">{conCorreo}</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-head"><span>Sin correo (se omiten)</span></div>
+                  <div className="stat-value mono">{sinCorreo}</div>
+                </div>
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 0' }}>
+                <span>Enviar solo a unidades con saldo pendiente (&gt; $ 0)</span>
+                <Toggle checked={soloConSaldoMasivo} onChange={setSoloConSaldoMasivo} />
+              </label>
+
+              {resultadoMasivo && (
+                <div
+                  style={{
+                    border: '1px solid #E4E4E7',
+                    borderRadius: 8,
+                    padding: 12,
+                    background: '#F8F8F7',
+                    fontSize: 13,
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <strong>Resultado ({resultadoMasivo.modo})</strong>
+                    <Badge tone={resultadoMasivo.modo === 'RESEND' ? 'ok' : 'info'}>
+                      {resultadoMasivo.modo === 'RESEND' ? 'Enviado vía Resend' : 'Modo Simulado'}
+                    </Badge>
+                  </div>
+                  <div>
+                    Enviados: <strong className="mono">{resultadoMasivo.enviados}</strong> · Simulados:{' '}
+                    <strong className="mono">{resultadoMasivo.simulados}</strong> · Sin correo:{' '}
+                    <strong className="mono">{resultadoMasivo.omitidosSinCorreo}</strong> · Errores:{' '}
+                    <strong className="mono">{resultadoMasivo.errores}</strong>
+                  </div>
+                  {resultadoMasivo.modo === 'SIMULADO' && (
+                    <div style={{ marginTop: 6, color: '#52525B', fontSize: 12 }}>
+                      Para entregar correos reales en producción, configura <code>RESEND_API_KEY</code> y{' '}
+                      <code>RESEND_FROM_EMAIL</code> en el backend de Render.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <strong style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
+                  Historial reciente de envíos ({fmtPeriodo(estado.periodo)})
+                </strong>
+                {cargandoHistorial ? (
+                  <div style={{ fontSize: 12.5, color: '#52525B' }}>Cargando trazabilidad…</div>
+                ) : historialEnvios.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: '#52525B' }}>
+                    Aún no hay envíos registrados para este periodo.
+                  </div>
+                ) : (
+                  <div className="table-scroll" style={{ maxHeight: 210 }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Unidad</th>
+                          <th>Correo</th>
+                          <th>Estado</th>
+                          <th>Detalle</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historialEnvios.slice(0, 40).map((d) => (
+                          <tr key={d.id}>
+                            <td className="mono">{d.torre} {d.numero}</td>
+                            <td style={{ fontSize: 12 }}>{d.emailDestino || '—'}</td>
+                            <td>
+                              <Badge tone={d.estado === 'ENVIADO' ? 'ok' : d.estado === 'ERROR' ? 'error' : 'info'}>
+                                {d.estado}
+                              </Badge>
+                            </td>
+                            <td style={{ fontSize: 12, color: '#52525B' }}>{d.detalleError ?? 'OK'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                <Btn variant="ghost" onClick={() => setModalEnvioMasivo(false)} disabled={enviandoMasivo}>
+                  Cerrar
+                </Btn>
+                <Btn variant="outline" onClick={() => void ejecutarEnvioMasivo(true)} disabled={enviandoMasivo}>
+                  {enviandoMasivo ? 'Procesando…' : 'Simular / Vista previa'}
+                </Btn>
+                <Btn variant="primary" icon="arrowRight" onClick={() => void ejecutarEnvioMasivo(false)} disabled={enviandoMasivo}>
+                  {enviandoMasivo ? 'Enviando…' : 'Enviar cobros por correo'}
+                </Btn>
+              </div>
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

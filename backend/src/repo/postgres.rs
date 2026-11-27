@@ -6,16 +6,16 @@ use crate::auth::{
 use crate::db::Db;
 use crate::domain::{
     demo_puc, ledger, ApproveResult, BillPeriodRequest, BillPeriodResult, BootstrapDatos,
-    ClosePeriodRequest, ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult,
-    CreateCompanyRequest, CreateCompanyResult,
+    BulkImportUnitsRequest, BulkImportUnitsResult, ClosePeriodRequest, ClosePeriodResult,
+    CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest, CreateCompanyResult,
     CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest,
     FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea,
     FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount,
     OpenNextPeriodResult, PortalCheckoutRequest, PortalCheckoutResponse, PortalCompanyPublicInfo,
-    PortalIntencionPagoItem, PortalLookupRequest, PortalLookupResponse, PortalLookupUnitMatch,
-    PortalUnitLinkItem, PortalUnitStatement,
-    PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
-    UpsertUnitRequest, VoidEntryResult,
+    PortalEmailDispatchItem, PortalEmailTarget, PortalIntencionPagoItem, PortalLookupRequest,
+    PortalLookupResponse, PortalLookupUnitMatch, PortalUnitLinkItem, PortalUnitStatement,
+    PostEntryResult, RecordPortalDispatchInput, ThirdParty, UpdateCompanySettingsRequest,
+    UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
 use crate::repo::{
@@ -4717,6 +4717,517 @@ impl PostgresRepo {
         .fetch_optional(&self.db.pool)
         .await?;
         Ok(slug)
+    }
+
+    pub async fn bulk_import_units(
+        &self,
+        company_id: &str,
+        req: BulkImportUnitsRequest,
+        actor: &str,
+    ) -> Result<BulkImportUnitsResult, ApiError> {
+        if req.rows.is_empty() {
+            return Err(ApiError::unprocessable("No hay unidades para importar."));
+        }
+        if req.rows.len() > 1000 {
+            return Err(ApiError::unprocessable(
+                "Cada lote admite máximo 1.000 unidades.",
+            ));
+        }
+
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let company_ciudad: String = sqlx::query_scalar("SELECT ciudad FROM copropiedades WHERE id = $1")
+            .bind(company.uuid)
+            .fetch_one(&mut *tx)
+            .await?;
+
+        let existing_rows = sqlx::query(
+            "SELECT grupo_torre, numero_unidad
+               FROM unidades_inmobiliarias
+              WHERE copropiedad_id = $1",
+        )
+        .bind(company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut existing_units: std::collections::HashSet<String> = existing_rows
+            .into_iter()
+            .filter_map(|r| {
+                let t: String = r.try_get("grupo_torre").ok()?;
+                let n: String = r.try_get("numero_unidad").ok()?;
+                Some(format!(
+                    "{}|{}",
+                    t.trim().to_ascii_uppercase(),
+                    n.trim().to_ascii_uppercase()
+                ))
+            })
+            .collect();
+
+        let tp_rows = sqlx::query(
+            "SELECT id, COALESCE(clave_externa, id::text) AS ext_id, documento, tipo
+               FROM terceros
+              WHERE copropiedad_id = $1 OR copropiedad_id IS NULL",
+        )
+        .bind(company.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let mut doc_to_tp: HashMap<String, (Uuid, String)> = HashMap::new();
+        let mut fallback_prop: Option<(Uuid, String)> = None;
+        for r in tp_rows {
+            let uuid: Uuid = r.try_get("id")?;
+            let ext_id: String = r.try_get("ext_id")?;
+            let doc: String = r.try_get("documento")?;
+            let tipo: String = r.try_get("tipo")?;
+            if tipo == "PROPIETARIO" && fallback_prop.is_none() {
+                fallback_prop = Some((uuid, ext_id.clone()));
+            }
+            let digits = extract_digits(&doc);
+            let key = if digits.is_empty() {
+                doc.trim().to_ascii_uppercase()
+            } else {
+                digits
+            };
+            if !key.is_empty() {
+                doc_to_tp.entry(key).or_insert((uuid, ext_id));
+            }
+        }
+
+        let mut creadas = 0usize;
+        let mut omitidas = 0usize;
+        let mut propietarios_creados = 0usize;
+        let mut errores = Vec::new();
+        let mut new_units = Vec::new();
+        let mut new_terceros = Vec::new();
+
+        for (idx, row) in req.rows.into_iter().enumerate() {
+            let torre = row.torre.trim().to_string();
+            let numero = row.numero.trim().to_string();
+            if torre.is_empty() || numero.is_empty() || row.coeficiente <= Decimal::ZERO {
+                errores.push(format!(
+                    "Fila {}: torre, número o coeficiente inválido.",
+                    idx + 1
+                ));
+                continue;
+            }
+            let u_key = format!(
+                "{}|{}",
+                torre.to_ascii_uppercase(),
+                numero.to_ascii_uppercase()
+            );
+            if existing_units.contains(&u_key) {
+                omitidas += 1;
+                continue;
+            }
+
+            let raw_doc = row.propietario_documento.trim().to_string();
+            let digits = extract_digits(&raw_doc);
+            let doc_key = if digits.is_empty() {
+                raw_doc.to_ascii_uppercase()
+            } else {
+                digits
+            };
+
+            let (prop_uuid, prop_ext) = if !doc_key.is_empty() {
+                if let Some(pair) = doc_to_tp.get(&doc_key) {
+                    pair.clone()
+                } else {
+                    let tid = Uuid::new_v4();
+                    let t_ext = format!("tp-{}", tid.simple());
+                    let nombre = if row.propietario_nombre.trim().is_empty() {
+                        format!("Propietario {torre} {numero}")
+                    } else {
+                        row.propietario_nombre.trim().to_string()
+                    };
+                    let email = row.propietario_email.trim().to_string();
+                    let telefono = row.propietario_telefono.trim().to_string();
+                    sqlx::query(
+                        "INSERT INTO terceros (
+                            id, clave_externa, copropiedad_id, nombre, tipo, documento, dv,
+                            email, telefono, ciudad, retefuente_pct, reteica_pct, reteiva_pct,
+                            regimen_especial, no_obligado
+                        ) VALUES ($1,$2,$3,$4,'PROPIETARIO',$5,NULL,$6,$7,$8,0,0,0,FALSE,TRUE)",
+                    )
+                    .bind(tid)
+                    .bind(&t_ext)
+                    .bind(company.uuid)
+                    .bind(&nombre)
+                    .bind(&raw_doc)
+                    .bind(&email)
+                    .bind(&telefono)
+                    .bind(&company_ciudad)
+                    .execute(&mut *tx)
+                    .await?;
+
+                    new_terceros.push(FrontendTercero {
+                        id: t_ext.clone(),
+                        empresa_id: Some(company.slug.clone()),
+                        nombre,
+                        tipo: "PROPIETARIO".into(),
+                        documento: raw_doc,
+                        dv: None,
+                        email,
+                        telefono,
+                        ciudad: company_ciudad.clone(),
+                        retefuente_pct: Decimal::ZERO,
+                        reteica_pct: Decimal::ZERO,
+                        reteiva_pct: Decimal::ZERO,
+                        no_obligado: true,
+                        regimen_especial: Some(false),
+                    });
+                    doc_to_tp.insert(doc_key, (tid, t_ext.clone()));
+                    propietarios_creados += 1;
+                    (tid, t_ext)
+                }
+            } else if let Some(fb) = &fallback_prop {
+                fb.clone()
+            } else {
+                errores.push(format!(
+                    "Fila {} ({torre} {numero}): falta documento del propietario.",
+                    idx + 1
+                ));
+                continue;
+            };
+
+            let uid = Uuid::new_v4();
+            let u_ext = format!("u-{}", uid.simple());
+            let tipo = if row.tipo.trim().is_empty() {
+                "APARTAMENTO".to_string()
+            } else {
+                row.tipo.trim().to_ascii_uppercase()
+            };
+            let matricula = row.matricula.trim().to_string();
+            sqlx::query(
+                "INSERT INTO unidades_inmobiliarias (
+                    id, clave_externa, copropiedad_id, grupo_torre, numero_unidad, tipo,
+                    area, matricula_inmobiliaria, coeficiente, esta_arrendado, cartera_congelada
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,FALSE,$10)",
+            )
+            .bind(uid)
+            .bind(&u_ext)
+            .bind(company.uuid)
+            .bind(&torre)
+            .bind(&numero)
+            .bind(&tipo)
+            .bind(row.area)
+            .bind(&matricula)
+            .bind(row.coeficiente)
+            .bind(row.cartera_congelada)
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query(
+                "INSERT INTO vinculos_unidad_tercero (unidad_id, tercero_id, rol_en_unidad)
+                 VALUES ($1, $2, 'PROPIETARIO')",
+            )
+            .bind(uid)
+            .bind(prop_uuid)
+            .execute(&mut *tx)
+            .await?;
+
+            new_units.push(FrontendUnidad {
+                id: u_ext,
+                empresa_id: company.slug.clone(),
+                torre,
+                numero,
+                tipo,
+                area: row.area,
+                coeficiente: row.coeficiente,
+                matricula,
+                propietario_id: prop_ext,
+                arrendatario_id: None,
+                cartera_congelada: row.cartera_congelada,
+            });
+            existing_units.insert(u_key);
+            creadas += 1;
+        }
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Importó lote de unidades",
+            &format!("{creadas} creadas, {omitidas} omitidas, {propietarios_creados} propietarios nuevos"),
+        )
+        .await?;
+        tx.commit().await?;
+
+        Ok(BulkImportUnitsResult {
+            creadas,
+            omitidas,
+            propietarios_creados,
+            errores,
+            units: new_units,
+            terceros: new_terceros,
+        })
+    }
+
+    pub async fn list_portal_email_targets(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+        solo_con_saldo: bool,
+        unit_ids: &[String],
+    ) -> Result<(FrontendCopropiedad, String, Vec<PortalEmailTarget>), ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company_row = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let comp_meta = sqlx::query(
+            "SELECT nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                    sigla, ciudad, direccion, grupo_niif,
+                    COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
+                    tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
+                    COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
+                    COALESCE(llave_bre_b, '') AS llave_bre_b,
+                    presupuesto_anual, color,
+                    COALESCE(wompi_public_key, '') AS wompi_public_key,
+                    COALESCE(wompi_sandbox, TRUE) AS wompi_sandbox,
+                    (COALESCE(wompi_public_key, '') <> '' AND COALESCE(wompi_integrity_secret, '') <> '') AS wompi_configurado,
+                    COALESCE(portal_logo_url, '') AS portal_logo_url,
+                    COALESCE(portal_cover_url, '') AS portal_cover_url,
+                    COALESCE(NULLIF(portal_color_primario, ''), '#0F766E') AS portal_color_primario,
+                    COALESCE(portal_mensaje_bienvenida, '') AS portal_mensaje_bienvenida,
+                    COALESCE(portal_whatsapp_soporte, '') AS portal_whatsapp_soporte
+               FROM copropiedades
+              WHERE id = $1",
+        )
+        .bind(company_row.uuid)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let unit_rows = sqlx::query(
+            "SELECT COALESCE(u.clave_externa, u.id::text) AS ext_id,
+                    u.grupo_torre, u.numero_unidad,
+                    COALESCE(u.tipo, 'APARTAMENTO') AS tipo,
+                    COALESCE(u.area, 0) AS area,
+                    u.coeficiente,
+                    COALESCE(u.matricula_inmobiliaria, '') AS matricula,
+                    u.cartera_congelada,
+                    COALESCE(COALESCE(tp.clave_externa, tp.id::text), '') AS prop_ext,
+                    COALESCE(tp.nombre, '') AS prop_nombre,
+                    COALESCE(tp.email, '') AS prop_email,
+                    COALESCE(ta.clave_externa, ta.id::text) AS arr_ext,
+                    ta.nombre AS arr_nombre,
+                    ta.email AS arr_email
+               FROM unidades_inmobiliarias u
+               LEFT JOIN vinculos_unidad_tercero vp
+                 ON vp.unidad_id = u.id AND vp.rol_en_unidad = 'PROPIETARIO' AND vp.activo = TRUE
+               LEFT JOIN terceros tp ON tp.id = vp.tercero_id
+               LEFT JOIN vinculos_unidad_tercero va
+                 ON va.unidad_id = u.id AND va.rol_en_unidad = 'ARRENDATARIO' AND va.activo = TRUE
+               LEFT JOIN terceros ta ON ta.id = va.tercero_id
+              WHERE u.copropiedad_id = $1
+              ORDER BY u.grupo_torre, u.numero_unidad",
+        )
+        .bind(company_row.uuid)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let saldos_map: HashMap<String, Decimal> =
+            serde_json::from_value(company_row.saldos_iniciales.clone()).unwrap_or_default();
+        let company_dto = FrontendCopropiedad {
+            id: company_row.slug.clone(),
+            nit: comp_meta.try_get("nit")?,
+            razon_social: comp_meta.try_get("razon_social")?,
+            nombre_corto: comp_meta.try_get("nombre_corto")?,
+            sigla: comp_meta.try_get("sigla")?,
+            ciudad: comp_meta.try_get("ciudad")?,
+            direccion: comp_meta.try_get("direccion")?,
+            grupo_niif: comp_meta.try_get("grupo_niif")?,
+            fondo_imprevistos_pct: comp_meta.try_get("fondo_pct")?,
+            tasa_mora_mensual: comp_meta.try_get("tasa_mora_mensual")?,
+            dia_corte_pronto_pago: comp_meta.try_get("dia_corte")?,
+            descuento_pronto_pago_pct: comp_meta.try_get("desc_pct")?,
+            llave_bre_b: comp_meta.try_get("llave_bre_b")?,
+            presupuesto_anual: comp_meta.try_get("presupuesto_anual")?,
+            periodo_actual: company_row.periodo_actual.clone(),
+            saldos_iniciales: saldos_map,
+            escala: company_row.escala,
+            color: comp_meta.try_get("color")?,
+            wompi_public_key: comp_meta.try_get("wompi_public_key")?,
+            wompi_sandbox: comp_meta.try_get("wompi_sandbox")?,
+            wompi_configurado: comp_meta.try_get("wompi_configurado")?,
+            portal_logo_url: comp_meta.try_get("portal_logo_url")?,
+            portal_cover_url: comp_meta.try_get("portal_cover_url")?,
+            portal_color_primario: comp_meta.try_get("portal_color_primario")?,
+            portal_mensaje_bienvenida: comp_meta.try_get("portal_mensaje_bienvenida")?,
+            portal_whatsapp_soporte: comp_meta.try_get("portal_whatsapp_soporte")?,
+        };
+        let target_periodo = periodo
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&company_dto.periodo_actual)
+            .to_string();
+
+        let entries = self.load_entries_query(Some(company_row.uuid), None).await?;
+        let filter_set: std::collections::HashSet<&str> =
+            unit_ids.iter().map(String::as_str).collect();
+        let mut out = Vec::new();
+        for r in unit_rows {
+            let ext_id: String = r.try_get("ext_id")?;
+            if !filter_set.is_empty() && !filter_set.contains(ext_id.as_str()) {
+                continue;
+            }
+            let unit = FrontendUnidad {
+                id: ext_id.clone(),
+                empresa_id: company_row.slug.clone(),
+                torre: r.try_get("grupo_torre")?,
+                numero: r.try_get("numero_unidad")?,
+                tipo: r.try_get("tipo")?,
+                area: r.try_get("area")?,
+                coeficiente: r.try_get("coeficiente")?,
+                matricula: r.try_get("matricula")?,
+                propietario_id: r.try_get("prop_ext")?,
+                arrendatario_id: r.try_get("arr_ext")?,
+                cartera_congelada: r.try_get("cartera_congelada")?,
+            };
+            let fig = compute_unit_portal_figures(&company_dto, &unit, &entries);
+            if solo_con_saldo && fig.saldo_actual <= Decimal::ZERO {
+                continue;
+            }
+            let prop_nombre: String = r.try_get("prop_nombre")?;
+            let prop_email: String = r.try_get("prop_email")?;
+            let arr_nombre: Option<String> = r.try_get("arr_nombre")?;
+            let arr_email: Option<String> = r.try_get("arr_email")?;
+            let (dest_nombre, email) = if let (Some(an), Some(ae)) = (arr_nombre, arr_email) {
+                if !ae.trim().is_empty() {
+                    (an, ae.trim().to_string())
+                } else {
+                    (prop_nombre, prop_email.trim().to_string())
+                }
+            } else {
+                (prop_nombre, prop_email.trim().to_string())
+            };
+            let token = auth::issue_portal_token(&company_dto.id, &unit.id)?;
+            out.push(PortalEmailTarget {
+                unit_id: unit.id,
+                torre: unit.torre,
+                numero: unit.numero,
+                destinatario_nombre: if dest_nombre.trim().is_empty() {
+                    "Propietario".into()
+                } else {
+                    dest_nombre
+                },
+                email,
+                saldo_actual: fig.saldo_actual,
+                cuota_mensual: fig.cuota_mensual,
+                descuento_pronto_pago: fig.descuento_pronto_pago,
+                total_con_descuento: fig.total_con_descuento,
+                token,
+            });
+        }
+        Ok((company_dto, target_periodo, out))
+    }
+
+    pub async fn record_portal_dispatches(
+        &self,
+        company_id: &str,
+        items: Vec<RecordPortalDispatchInput>,
+        actor: &str,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let mut saved = Vec::with_capacity(items.len());
+        let mut sent_cnt = 0usize;
+
+        for it in items {
+            if it.estado == "ENVIADO" {
+                sent_cnt += 1;
+            }
+            let row = sqlx::query(
+                "INSERT INTO envios_cobro (
+                    copropiedad_id, unidad_id, periodo, email_destino, canal,
+                    estado, proveedor_id, detalle_error, creado_por
+                ) VALUES (
+                    $1,
+                    (SELECT id FROM unidades_inmobiliarias
+                      WHERE copropiedad_id = $1 AND (clave_externa = $2 OR id::text = $2)
+                      LIMIT 1),
+                    $3, $4, 'EMAIL', $5, $6, $7, $8
+                )
+                RETURNING id, created_at",
+            )
+            .bind(company.uuid)
+            .bind(&it.unit_id)
+            .bind(&it.periodo)
+            .bind(&it.email_destino)
+            .bind(&it.estado)
+            .bind(&it.proveedor_id)
+            .bind(&it.detalle_error)
+            .bind(actor)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            let rec_id: Uuid = row.try_get("id")?;
+            let created_at: DateTime<Utc> = row.try_get("created_at")?;
+            saved.push(PortalEmailDispatchItem {
+                id: rec_id.to_string(),
+                periodo: it.periodo,
+                unit_id: it.unit_id,
+                torre: it.torre,
+                numero: it.numero,
+                email_destino: it.email_destino,
+                estado: it.estado,
+                detalle_error: it.detalle_error,
+                created_at: created_at.to_rfc3339(),
+            });
+        }
+
+        let _ = Self::insert_audit_tx(
+            &mut tx,
+            &company,
+            actor,
+            "Envío masivo de cobros",
+            &format!("{} registros ({sent_cnt} enviados por correo)", saved.len()),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(saved)
+    }
+
+    pub async fn list_portal_dispatches(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, company_id).await?;
+        let period_filter = periodo.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+        let rows = sqlx::query(
+            "SELECT e.id, e.periodo,
+                    COALESCE(u.clave_externa, u.id::text, '') AS unit_ext_id,
+                    COALESCE(u.grupo_torre, '') AS torre,
+                    COALESCE(u.numero_unidad, '') AS numero,
+                    e.email_destino, e.estado, e.detalle_error, e.created_at
+               FROM envios_cobro e
+               LEFT JOIN unidades_inmobiliarias u ON u.id = e.unidad_id
+              WHERE e.copropiedad_id = $1
+                AND ($2::text IS NULL OR e.periodo = $2)
+              ORDER BY e.created_at DESC
+              LIMIT 150",
+        )
+        .bind(company.uuid)
+        .bind(period_filter)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let id: Uuid = r.try_get("id")?;
+            let created_at: DateTime<Utc> = r.try_get("created_at")?;
+            out.push(PortalEmailDispatchItem {
+                id: id.to_string(),
+                periodo: r.try_get::<String, _>("periodo")?.trim().to_string(),
+                unit_id: r.try_get("unit_ext_id")?,
+                torre: r.try_get("torre")?,
+                numero: r.try_get("numero")?,
+                email_destino: r.try_get("email_destino")?,
+                estado: r.try_get("estado")?,
+                detalle_error: r.try_get("detalle_error")?,
+                created_at: created_at.to_rfc3339(),
+            });
+        }
+        Ok(out)
     }
 
     pub async fn entry_company_id(&self, entry_id: &str) -> Result<Option<String>, ApiError> {

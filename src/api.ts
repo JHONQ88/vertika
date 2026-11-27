@@ -743,3 +743,84 @@ export async function portalSimulatePaymentApi(
     { method: 'POST', body: JSON.stringify(payload) },
   );
 }
+
+export interface BulkImportUnitRow {
+  torre: string;
+  numero: string;
+  tipo: string;
+  area: number;
+  coeficiente: number;
+  matricula: string;
+  propietarioNombre: string;
+  propietarioDocumento: string;
+  propietarioEmail: string;
+  propietarioTelefono: string;
+  carteraCongelada?: boolean;
+}
+
+export interface BulkImportUnitsResult {
+  creadas: number;
+  omitidas: number;
+  propietariosCreados: number;
+  errores: string[];
+  units: Unidad[];
+  terceros: Tercero[];
+}
+
+export async function bulkImportUnitsApi(
+  companyId: string,
+  rows: BulkImportUnitRow[],
+): Promise<BulkImportUnitsResult> {
+  return request<BulkImportUnitsResult>(
+    `/api/v1/companies/${encodeURIComponent(companyId)}/units/import-batch`,
+    { method: 'POST', body: JSON.stringify({ rows }) },
+  );
+}
+
+export interface PortalEmailDispatchItem {
+  id: string;
+  periodo: string;
+  unitId: string;
+  torre: string;
+  numero: string;
+  emailDestino: string;
+  estado: string;
+  detalleError?: string | null;
+  createdAt: string;
+}
+
+export interface SendPortalEmailsResult {
+  modo: string;
+  enviados: number;
+  simulados: number;
+  omitidosSinCorreo: number;
+  errores: number;
+  detalles: PortalEmailDispatchItem[];
+}
+
+export async function sendPortalEmailsApi(
+  companyId: string,
+  payload: {
+    periodo?: string;
+    soloConSaldo?: boolean;
+    unitIds?: string[];
+    portalBaseUrl?: string;
+    dryRun?: boolean;
+  },
+): Promise<SendPortalEmailsResult> {
+  return request<SendPortalEmailsResult>(
+    `/api/v1/companies/${encodeURIComponent(companyId)}/portal-links/send-emails`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+export async function fetchPortalDispatchesApi(
+  companyId: string,
+  periodo?: string,
+): Promise<PortalEmailDispatchItem[]> {
+  const qs = periodo ? `?periodo=${encodeURIComponent(periodo)}` : '';
+  const res = await request<{ dispatches: PortalEmailDispatchItem[] }>(
+    `/api/v1/companies/${encodeURIComponent(companyId)}/portal-links/dispatches${qs}`,
+  );
+  return res.dispatches ?? [];
+}

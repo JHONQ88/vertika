@@ -725,3 +725,114 @@ pub struct PortalCheckoutResponse {
     pub checkout_url: String,
     pub sandbox_simulable: bool,
 }
+
+fn default_unit_tipo() -> String {
+    "APARTAMENTO".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportUnitRow {
+    pub torre: String,
+    pub numero: String,
+    #[serde(default = "default_unit_tipo")]
+    pub tipo: String,
+    #[serde(default)]
+    pub area: Decimal,
+    pub coeficiente: Decimal,
+    #[serde(default)]
+    pub matricula: String,
+    #[serde(default, alias = "propietario_nombre")]
+    pub propietario_nombre: String,
+    #[serde(default, alias = "propietario_documento")]
+    pub propietario_documento: String,
+    #[serde(default, alias = "propietario_email")]
+    pub propietario_email: String,
+    #[serde(default, alias = "propietario_telefono")]
+    pub propietario_telefono: String,
+    #[serde(default, alias = "cartera_congelada")]
+    pub cartera_congelada: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportUnitsRequest {
+    pub rows: Vec<ImportUnitRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportUnitsResult {
+    pub creadas: usize,
+    pub omitidas: usize,
+    pub propietarios_creados: usize,
+    pub errores: Vec<String>,
+    pub units: Vec<FrontendUnidad>,
+    pub terceros: Vec<FrontendTercero>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendPortalEmailsRequest {
+    #[serde(default)]
+    pub periodo: Option<String>,
+    #[serde(default = "default_true", alias = "solo_con_saldo")]
+    pub solo_con_saldo: bool,
+    #[serde(default, alias = "unit_ids")]
+    pub unit_ids: Vec<String>,
+    #[serde(default, alias = "portal_base_url")]
+    pub portal_base_url: String,
+    #[serde(default, alias = "dry_run")]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalEmailDispatchItem {
+    pub id: String,
+    pub periodo: String,
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub email_destino: String,
+    pub estado: String,
+    pub detalle_error: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendPortalEmailsResult {
+    pub modo: String,
+    pub enviados: usize,
+    pub simulados: usize,
+    pub omitidos_sin_correo: usize,
+    pub errores: usize,
+    pub detalles: Vec<PortalEmailDispatchItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PortalEmailTarget {
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub destinatario_nombre: String,
+    pub email: String,
+    pub saldo_actual: Decimal,
+    pub cuota_mensual: Decimal,
+    pub descuento_pronto_pago: Decimal,
+    pub total_con_descuento: Decimal,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecordPortalDispatchInput {
+    pub periodo: String,
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub email_destino: String,
+    pub estado: String,
+    pub proveedor_id: Option<String>,
+    pub detalle_error: Option<String>,
+}

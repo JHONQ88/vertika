@@ -22,7 +22,10 @@ import {
   apiEnabled,
   approvePreEntryApi,
   billPeriodApi,
+  bulkImportUnitsApi,
   changePasswordApi,
+  type BulkImportUnitRow,
+  type BulkImportUnitsResult,
   closePeriodApi,
   copyThirdPartiesApi,
   createCompanyApi,
@@ -1280,6 +1283,40 @@ export const acciones = {
     const ev = evento(actorActual(), 'Creó unidad', `${unit.torre} ${unit.numero}`);
     commitLocal({ ...state, auditoria: [ev, ...state.auditoria].slice(0, 200) });
     return { ok: true, detalle: `${unit.torre} ${unit.numero}` };
+  },
+
+  async importarUnidadesLote(
+    rows: BulkImportUnitRow[],
+  ): Promise<{ ok: true; data: BulkImportUnitsResult } | { ok: false; error: string }> {
+    if (!tienePermiso(authSession.user.rol, 'maestros')) {
+      return { ok: false, error: `El rol ${authSession.user.rol} no puede editar maestros.` };
+    }
+    const empresa = empresaActiva(state);
+    if (!apiEnabled) {
+      return { ok: false, error: 'La importación en lote requiere conexión con el servidor.' };
+    }
+    try {
+      const data = await bulkImportUnitsApi(empresa.id, rows);
+      const unitIds = new Set(DATOS.units.map((u) => u.id));
+      const tpIds = new Set(DATOS.terceros.map((t) => t.id));
+      DATOS = {
+        ...DATOS,
+        units: [...DATOS.units, ...data.units.filter((u) => !unitIds.has(u.id))],
+        terceros: [...DATOS.terceros, ...data.terceros.filter((t) => !tpIds.has(t.id))],
+      };
+      const ev = evento(
+        actorActual(),
+        'Importó lote de unidades',
+        `${data.creadas} creadas, ${data.omitidas} omitidas, ${data.propietariosCreados} propietarios nuevos`,
+      );
+      commitLocal({ ...state, auditoria: [ev, ...state.auditoria].slice(0, 200) });
+      return { ok: true, data };
+    } catch (e: unknown) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : 'No se pudo importar el lote de unidades.',
+      };
+    }
   },
 
   async actualizarUnidad(unitId: string, payload: UpsertUnitPayload): Promise<Resultado> {

@@ -5,15 +5,16 @@ use crate::auth::{
 };
 use crate::domain::{
     demo_puc, ledger, third_parties_from_seed, ApproveResult, BalanceRequest, BillPeriodRequest,
-    BillPeriodResult, BootstrapDatos, ClosePeriodRequest, ClosePeriodResult,
-    CopyThirdPartiesRequest, CopyThirdPartiesResult, CreateCompanyRequest,
-    CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult,
-    CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
-    FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
-    FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
-    PortalCheckoutResponse, PortalCompanyPublicInfo, PortalIntencionPagoItem, PortalLookupRequest,
-    PortalLookupResponse, PortalLookupUnitMatch, PortalUnitLinkItem, PortalUnitStatement,
-    PostEntryResult, ThirdParty,
+    BillPeriodResult, BootstrapDatos, BulkImportUnitsRequest, BulkImportUnitsResult,
+    ClosePeriodRequest, ClosePeriodResult, CopyThirdPartiesRequest, CopyThirdPartiesResult,
+    CreateCompanyRequest, CreateCompanyResult, CreateEntryRequest, CreatePreEntryRequest,
+    CreatePreEntryResult, CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante,
+    FrontendCopropiedad, FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro,
+    FrontendTercero, FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
+    PortalCheckoutResponse, PortalCompanyPublicInfo, PortalEmailDispatchItem, PortalEmailTarget,
+    PortalIntencionPagoItem, PortalLookupRequest, PortalLookupResponse, PortalLookupUnitMatch,
+    PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, RecordPortalDispatchInput,
+    ThirdParty,
     UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
@@ -75,6 +76,7 @@ struct MemoryData {
     company_owners: HashMap<String, String>,
     wompi_secrets: HashMap<String, WompiSecrets>,
     payment_intents: Vec<StoredPaymentIntent>,
+    email_dispatches: Vec<(String, PortalEmailDispatchItem)>,
     legacy_override: Option<Value>,
 }
 
@@ -171,6 +173,7 @@ impl MemoryRepo {
             company_owners,
             wompi_secrets: HashMap::new(),
             payment_intents: Vec::new(),
+            email_dispatches: Vec::new(),
             legacy_override: None,
         })
     }
@@ -2416,6 +2419,299 @@ impl MemoryRepo {
             "referencia": intent.referencia,
             "comprobante": comp,
         }))
+    }
+
+    pub async fn bulk_import_units(
+        &self,
+        company_id: &str,
+        req: BulkImportUnitsRequest,
+        actor: &str,
+    ) -> Result<BulkImportUnitsResult, ApiError> {
+        if req.rows.is_empty() {
+            return Err(ApiError::unprocessable("No hay unidades para importar."));
+        }
+        if req.rows.len() > 1000 {
+            return Err(ApiError::unprocessable(
+                "Cada lote admite máximo 1.000 unidades.",
+            ));
+        }
+
+        let mut g = self.inner.write().await;
+        let company_ciudad = Self::find_company(&g.datos, company_id)?.ciudad.clone();
+
+        let mut existing_units: std::collections::HashSet<String> = g
+            .datos
+            .units
+            .iter()
+            .filter(|u| u.empresa_id == company_id)
+            .map(|u| {
+                format!(
+                    "{}|{}",
+                    u.torre.trim().to_ascii_uppercase(),
+                    u.numero.trim().to_ascii_uppercase()
+                )
+            })
+            .collect();
+
+        let mut doc_to_tp: HashMap<String, String> = HashMap::new();
+        for t in &g.datos.terceros {
+            let owned_by_company = t.empresa_id.as_deref().is_none_or(|e| e == company_id);
+            if owned_by_company {
+                let d = extract_digits(&t.documento);
+                let key = if d.is_empty() {
+                    t.documento.trim().to_ascii_uppercase()
+                } else {
+                    d
+                };
+                if !key.is_empty() {
+                    doc_to_tp.entry(key).or_insert_with(|| t.id.clone());
+                }
+            }
+        }
+        let fallback_prop = g
+            .datos
+            .terceros
+            .iter()
+            .find(|t| t.empresa_id.as_deref().is_none_or(|e| e == company_id) && t.tipo == "PROPIETARIO")
+            .map(|t| t.id.clone());
+
+        let mut creadas = 0usize;
+        let mut omitidas = 0usize;
+        let mut propietarios_creados = 0usize;
+        let mut errores = Vec::new();
+        let mut new_units = Vec::new();
+        let mut new_terceros = Vec::new();
+
+        for (idx, row) in req.rows.into_iter().enumerate() {
+            let torre = row.torre.trim().to_string();
+            let numero = row.numero.trim().to_string();
+            if torre.is_empty() || numero.is_empty() || row.coeficiente <= Decimal::ZERO {
+                errores.push(format!(
+                    "Fila {}: torre, número o coeficiente inválido.",
+                    idx + 1
+                ));
+                continue;
+            }
+            let u_key = format!(
+                "{}|{}",
+                torre.to_ascii_uppercase(),
+                numero.to_ascii_uppercase()
+            );
+            if existing_units.contains(&u_key) {
+                omitidas += 1;
+                continue;
+            }
+
+            let raw_doc = row.propietario_documento.trim().to_string();
+            let doc_digits = extract_digits(&raw_doc);
+            let doc_key = if doc_digits.is_empty() {
+                raw_doc.to_ascii_uppercase()
+            } else {
+                doc_digits
+            };
+
+            let prop_id = if !doc_key.is_empty() {
+                if let Some(id) = doc_to_tp.get(&doc_key) {
+                    id.clone()
+                } else {
+                    let tp_id = format!("tp-{}", Uuid::new_v4().simple());
+                    let nombre = if row.propietario_nombre.trim().is_empty() {
+                        format!("Propietario {torre} {numero}")
+                    } else {
+                        row.propietario_nombre.trim().to_string()
+                    };
+                    let tp = FrontendTercero {
+                        id: tp_id.clone(),
+                        empresa_id: Some(company_id.to_string()),
+                        nombre,
+                        tipo: "PROPIETARIO".into(),
+                        documento: raw_doc,
+                        dv: None,
+                        email: row.propietario_email.trim().to_string(),
+                        telefono: row.propietario_telefono.trim().to_string(),
+                        ciudad: company_ciudad.clone(),
+                        retefuente_pct: Decimal::ZERO,
+                        reteica_pct: Decimal::ZERO,
+                        reteiva_pct: Decimal::ZERO,
+                        no_obligado: true,
+                        regimen_especial: Some(false),
+                    };
+                    g.datos.terceros.push(tp.clone());
+                    new_terceros.push(tp);
+                    doc_to_tp.insert(doc_key, tp_id.clone());
+                    propietarios_creados += 1;
+                    tp_id
+                }
+            } else if let Some(fb) = &fallback_prop {
+                fb.clone()
+            } else {
+                errores.push(format!(
+                    "Fila {} ({torre} {numero}): falta documento del propietario.",
+                    idx + 1
+                ));
+                continue;
+            };
+
+            let unit = FrontendUnidad {
+                id: format!("u-{}", Uuid::new_v4().simple()),
+                empresa_id: company_id.to_string(),
+                torre,
+                numero,
+                tipo: if row.tipo.trim().is_empty() {
+                    "APARTAMENTO".into()
+                } else {
+                    row.tipo.trim().to_ascii_uppercase()
+                },
+                area: row.area,
+                coeficiente: row.coeficiente,
+                matricula: row.matricula.trim().to_string(),
+                propietario_id: prop_id,
+                arrendatario_id: None,
+                cartera_congelada: row.cartera_congelada,
+            };
+            g.datos.units.push(unit.clone());
+            new_units.push(unit);
+            existing_units.insert(u_key);
+            creadas += 1;
+        }
+
+        let ev = Self::make_audit(
+            company_id,
+            actor,
+            "Importó lote de unidades",
+            format!("{creadas} creadas, {omitidas} omitidas, {propietarios_creados} propietarios nuevos"),
+        );
+        g.estado.auditoria.insert(0, ev);
+        g.estado.auditoria.truncate(200);
+
+        Ok(BulkImportUnitsResult {
+            creadas,
+            omitidas,
+            propietarios_creados,
+            errores,
+            units: new_units,
+            terceros: new_terceros,
+        })
+    }
+
+    pub async fn list_portal_email_targets(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+        solo_con_saldo: bool,
+        unit_ids: &[String],
+    ) -> Result<(FrontendCopropiedad, String, Vec<PortalEmailTarget>), ApiError> {
+        let g = self.inner.read().await;
+        let company = Self::find_company(&g.datos, company_id)?.clone();
+        let target_periodo = periodo
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&company.periodo_actual)
+            .to_string();
+        let filter_set: std::collections::HashSet<&str> =
+            unit_ids.iter().map(String::as_str).collect();
+
+        let mut units: Vec<&FrontendUnidad> = g
+            .datos
+            .units
+            .iter()
+            .filter(|u| u.empresa_id == company.id)
+            .filter(|u| filter_set.is_empty() || filter_set.contains(u.id.as_str()))
+            .collect();
+        units.sort_by(|a, b| a.torre.cmp(&b.torre).then_with(|| a.numero.cmp(&b.numero)));
+
+        let mut out = Vec::new();
+        for u in units {
+            let fig = compute_unit_portal_figures(&company, u, &g.estado.comprobantes);
+            if solo_con_saldo && fig.saldo_actual <= Decimal::ZERO {
+                continue;
+            }
+            let prop = g.datos.terceros.iter().find(|t| t.id == u.propietario_id);
+            let arr = u
+                .arrendatario_id
+                .as_ref()
+                .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid));
+            let (dest_nombre, email) = match (arr, prop) {
+                (Some(a), _) if !a.email.trim().is_empty() => (a.nombre.clone(), a.email.trim().to_string()),
+                (_, Some(p)) if !p.email.trim().is_empty() => (p.nombre.clone(), p.email.trim().to_string()),
+                (_, Some(p)) => (p.nombre.clone(), String::new()),
+                _ => ("Propietario".into(), String::new()),
+            };
+            let token = auth::issue_portal_token(&company.id, &u.id)?;
+            out.push(PortalEmailTarget {
+                unit_id: u.id.clone(),
+                torre: u.torre.clone(),
+                numero: u.numero.clone(),
+                destinatario_nombre: dest_nombre,
+                email,
+                saldo_actual: fig.saldo_actual,
+                cuota_mensual: fig.cuota_mensual,
+                descuento_pronto_pago: fig.descuento_pronto_pago,
+                total_con_descuento: fig.total_con_descuento,
+                token,
+            });
+        }
+        Ok((company, target_periodo, out))
+    }
+
+    pub async fn record_portal_dispatches(
+        &self,
+        company_id: &str,
+        items: Vec<RecordPortalDispatchInput>,
+        actor: &str,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        let mut g = self.inner.write().await;
+        Self::find_company(&g.datos, company_id)?;
+        let now = Utc::now().to_rfc3339();
+        let mut saved = Vec::with_capacity(items.len());
+        let mut sent_cnt = 0usize;
+        for it in items {
+            if it.estado == "ENVIADO" {
+                sent_cnt += 1;
+            }
+            let rec = PortalEmailDispatchItem {
+                id: format!("env-{}", Uuid::new_v4().simple()),
+                periodo: it.periodo,
+                unit_id: it.unit_id,
+                torre: it.torre,
+                numero: it.numero,
+                email_destino: it.email_destino,
+                estado: it.estado,
+                detalle_error: it.detalle_error,
+                created_at: now.clone(),
+            };
+            g.email_dispatches
+                .insert(0, (company_id.to_string(), rec.clone()));
+            saved.push(rec);
+        }
+        g.email_dispatches.truncate(2000);
+        let ev = Self::make_audit(
+            company_id,
+            actor,
+            "Envío masivo de cobros",
+            format!("{} registros ({sent_cnt} enviados por correo)", saved.len()),
+        );
+        g.estado.auditoria.insert(0, ev);
+        g.estado.auditoria.truncate(200);
+        Ok(saved)
+    }
+
+    pub async fn list_portal_dispatches(
+        &self,
+        company_id: &str,
+        periodo: Option<&str>,
+    ) -> Result<Vec<PortalEmailDispatchItem>, ApiError> {
+        let g = self.inner.read().await;
+        Self::find_company(&g.datos, company_id)?;
+        let period_filter = periodo.map(str::trim).filter(|s| !s.is_empty());
+        Ok(g.email_dispatches
+            .iter()
+            .filter(|(cid, item)| {
+                cid == company_id && period_filter.is_none_or(|p| item.periodo == p)
+            })
+            .take(150)
+            .map(|(_, item)| item.clone())
+            .collect())
     }
 
     pub async fn pre_entry_company_id(&self, pre_id: &str) -> Result<Option<String>, ApiError> {

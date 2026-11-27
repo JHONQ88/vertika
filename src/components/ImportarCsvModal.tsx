@@ -13,6 +13,7 @@ import {
 } from '../domain/csvImport';
 import { CUENTAS } from '../domain/puc';
 import { fmtMoney } from '../domain/format';
+import { apiEnabled } from '../api';
 import { acciones, DATOS, tercerosDe, unidadesDe } from '../store';
 import type { Copropiedad, EstadoApp } from '../domain/types';
 import type { ToastData } from '../ui-types';
@@ -173,6 +174,52 @@ export function ImportarCsvModal({
       }
 
       if (parsed.kind === 'unidades') {
+        if (apiEnabled) {
+          let creadas = 0;
+          let propCreados = 0;
+          let omitidas = 0;
+          let fallidas = 0;
+          const chunkSize = 250;
+          for (let start = 0; start < parsed.rows.length; start += chunkSize) {
+            const slice = parsed.rows.slice(start, start + chunkSize);
+            setProgreso(
+              `Importando lote ${Math.floor(start / chunkSize) + 1} (${start + 1}–${Math.min(start + slice.length, parsed.rows.length)} de ${parsed.rows.length})…`,
+            );
+            const res = await acciones.importarUnidadesLote(
+              slice.map((row) => ({
+                torre: row.torre,
+                numero: row.numero,
+                tipo: row.tipo,
+                area: row.area,
+                coeficiente: row.coeficiente,
+                matricula: row.matricula,
+                propietarioNombre: row.propietarioNombre,
+                propietarioDocumento: row.propietarioDocumento,
+                propietarioEmail: row.propietarioEmail,
+                propietarioTelefono: row.propietarioTelefono,
+                carteraCongelada: false,
+              })),
+            );
+            if (res.ok) {
+              creadas += res.data.creadas;
+              omitidas += res.data.omitidas;
+              propCreados += res.data.propietariosCreados;
+              fallidas += res.data.errores.length;
+            } else {
+              fallidas += slice.length;
+              toast({ tone: 'error', title: 'Error en lote', msg: res.error });
+            }
+          }
+          toast({
+            tone: fallidas > 0 && creadas === 0 ? 'error' : 'ok',
+            title: 'Importación en lote completada',
+            msg: `${creadas} unidad(es) · ${propCreados} propietario(s) nuevos · ${omitidas} omitida(s)${fallidas > 0 ? ` · ${fallidas} error(es)` : ''}`,
+          });
+          setRawText('');
+          onClose();
+          return;
+        }
+
         const docToId = new Map<string, string>();
         for (const t of tercerosDe(estado)) {
           docToId.set(t.documento.trim().toLowerCase(), t.id);
