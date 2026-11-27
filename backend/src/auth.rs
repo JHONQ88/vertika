@@ -411,8 +411,8 @@ impl LoginRateLimiter {
     }
 }
 
-pub fn login_rate_keys(headers: &HeaderMap, email: &str) -> (String, String) {
-    let ip = headers
+fn client_ip_from_headers(headers: &HeaderMap) -> &str {
+    headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
@@ -425,11 +425,24 @@ pub fn login_rate_keys(headers: &HeaderMap, email: &str) -> (String, String) {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
         })
-        .unwrap_or("local");
+        .unwrap_or("local")
+}
+
+pub fn login_rate_keys(headers: &HeaderMap, email: &str) -> (String, String) {
+    let ip = client_ip_from_headers(headers);
     let normalized_email = email.trim().to_ascii_lowercase();
     (
         format!("ip:{ip}|{normalized_email}"),
         format!("email:{normalized_email}"),
+    )
+}
+
+pub fn portal_rate_keys(headers: &HeaderMap, company_slug: &str, doc_digits: &str) -> (String, String) {
+    let ip = client_ip_from_headers(headers);
+    let slug = company_slug.trim().to_ascii_lowercase();
+    (
+        format!("portal-ip:{ip}|{slug}"),
+        format!("portal-doc:{slug}|{}", doc_digits.trim()),
     )
 }
 

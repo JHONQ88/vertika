@@ -1,14 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  fetchPortalCompanyApi,
   fetchPortalStatementApi,
   portalCreateCheckoutApi,
   portalLookupApi,
   portalSimulatePaymentApi,
+  type PortalCompanyPublicInfo,
+  type PortalLookupUnitMatch,
   type PortalUnitStatement,
 } from '../api';
 import { fmtCoef, fmtFecha, fmtMoney, fmtPeriodo } from '../domain/format';
 import { descargarArchivo, generarCuentaDeCobroHTML, generarPazYSalvoHTML } from '../domain/reports';
 import { Badge, Btn, Logo } from '../components/ui';
+
+type TurnstileApi = {
+  render: (
+    container: HTMLElement,
+    options: { sitekey: string; callback: (token: string) => void; 'expired-callback'?: () => void },
+  ) => string;
+  reset: (widgetId?: string) => void;
+};
 
 export function PortalResidente({
   initialToken,
@@ -18,14 +29,20 @@ export function PortalResidente({
   companySlug?: string;
 }) {
   const [token, setToken] = useState(initialToken ?? '');
+  const [companyInfo, setCompanyInfo] = useState<PortalCompanyPublicInfo | null>(null);
   const [stmt, setStmt] = useState<PortalUnitStatement | null>(null);
+  const [matchedUnits, setMatchedUnits] = useState<PortalLookupUnitMatch[]>([]);
   const [cargando, setCargando] = useState(Boolean(initialToken));
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
 
   // Lookup form
   const [unidadInput, setUnidadInput] = useState('');
+  const [mostrarFiltroUnidad, setMostrarFiltroUnidad] = useState(false);
   const [documentoInput, setDocumentoInput] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetId = useRef<string | null>(null);
   const [buscando, setBuscando] = useState(false);
 
   // Payment controls
@@ -46,6 +63,59 @@ export function PortalResidente({
       setCargando(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (!companySlug) return;
+    let active = true;
+    fetchPortalCompanyApi(companySlug)
+      .then((info) => {
+        if (active) setCompanyInfo(info);
+      })
+      .catch(() => {
+        // Ignored: lookup or statement call will display detailed error if slug is invalid
+      });
+    return () => {
+      active = false;
+    };
+  }, [companySlug]);
+
+  useEffect(() => {
+    const siteKey = companyInfo?.turnstileSiteKey?.trim();
+    const container = turnstileRef.current;
+    if (!siteKey || token || !container) return;
+
+    const mountWidget = () => {
+      if (!turnstileRef.current) return;
+      const api = (window as unknown as { turnstile?: TurnstileApi }).turnstile;
+      if (!api) return;
+      turnstileRef.current.innerHTML = '';
+      turnstileWidgetId.current = api.render(turnstileRef.current, {
+        sitekey: siteKey,
+        callback: (tok: string) => setTurnstileToken(tok),
+        'expired-callback': () => setTurnstileToken(''),
+      });
+    };
+
+    const existing = document.querySelector<HTMLScriptElement>('script[data-cf-turnstile="1"]');
+    if ((window as unknown as { turnstile?: TurnstileApi }).turnstile) {
+      mountWidget();
+      return;
+    }
+
+    const scriptEl = existing ?? document.createElement('script');
+    scriptEl.addEventListener('load', mountWidget);
+    if (!existing) {
+      scriptEl.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      scriptEl.async = true;
+      scriptEl.defer = true;
+      scriptEl.dataset.cfTurnstile = '1';
+      document.head.appendChild(scriptEl);
+    }
+
+    return () => {
+      scriptEl.removeEventListener('load', mountWidget);
+    };
+  }, [companyInfo?.turnstileSiteKey, token]);
 
   useEffect(() => {
     if (!token) return;
@@ -76,15 +146,45 @@ export function PortalResidente({
     try {
       const res = await portalLookupApi({
         companySlug,
-        unidad: unidadInput.trim(),
+        unidad: mostrarFiltroUnidad && unidadInput.trim() ? unidadInput.trim() : undefined,
         documento: documentoInput.trim(),
+        turnstileToken: turnstileToken || undefined,
       });
-      setToken(res.token);
-      window.history.replaceState(null, '', `/pagar/${encodeURIComponent(res.token)}`);
+      const units = res.units && res.units.length > 0 ? res.units : [];
+      setMatchedUnits(units);
+      if (units.length <= 1) {
+        const chosen = units[0]?.token ?? res.token;
+        setCargando(true);
+        setToken(chosen);
+        window.history.replaceState(null, '', `/pagar/${encodeURIComponent(chosen)}`);
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Datos inválidos.');
+      const api = (window as unknown as { turnstile?: TurnstileApi }).turnstile;
+      if (api && turnstileWidgetId.current) {
+        api.reset(turnstileWidgetId.current);
+        setTurnstileToken('');
+      }
     } finally {
       setBuscando(false);
+    }
+  };
+
+  const seleccionarUnidad = (tok: string) => {
+    setError(null);
+    setAviso(null);
+    setCargando(true);
+    setToken(tok);
+    window.history.replaceState(null, '', `/pagar/${encodeURIComponent(tok)}`);
+  };
+
+  const volverASelector = () => {
+    setToken('');
+    setStmt(null);
+    setAviso(null);
+    setError(null);
+    if (companySlug) {
+      window.history.replaceState(null, '', `/portal/${encodeURIComponent(companySlug)}`);
     }
   };
 
@@ -252,10 +352,14 @@ export function PortalResidente({
             <Logo size={28} />
             <div>
               <strong style={{ display: 'block', fontSize: 15, letterSpacing: '-0.02em' }}>
-                {stmt?.nombreCorto ?? 'Portal de Residentes y Pagos'}
+                {stmt?.nombreCorto ?? companyInfo?.nombreCorto ?? 'Portal de Residentes y Pagos'}
               </strong>
               <span style={{ fontSize: 12, color: '#52525B' }}>
-                {stmt ? `NIT ${stmt.nit} · Ley 675 de 2001` : 'Consulta tu estado de cuenta y paga en línea'}
+                {stmt
+                  ? `NIT ${stmt.nit} · Ley 675 de 2001`
+                  : companyInfo
+                    ? `NIT ${companyInfo.nit} · ${companyInfo.ciudad}`
+                    : 'Consulta tu estado de cuenta y paga en línea'}
               </span>
             </div>
           </div>
@@ -296,7 +400,7 @@ export function PortalResidente({
           </div>
         )}
 
-        {!token && companySlug && (
+        {!token && companySlug && matchedUnits.length === 0 && (
           <section
             style={{
               background: '#FFFFFF',
@@ -309,34 +413,130 @@ export function PortalResidente({
             }}
           >
             <h2 style={{ margin: '0 0 6px', fontSize: 18, letterSpacing: '-0.02em' }}>
-              Consulta tu cuenta de cobro
+              Validación de usuario
             </h2>
             <p style={{ margin: '0 0 16px', fontSize: 13.5, color: '#52525B' }}>
-              Ingresa tu torre y apartamento junto con el número de cédula o NIT registrado.
+              Ingresa tu número de cédula o NIT registrado para ver tus unidades, cuentas de cobro y pagar en línea.
             </p>
             <form onSubmit={(e) => void consultarPorDocumento(e)} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <label className="field">
-                <span>Unidad o Apartamento</span>
-                <input
-                  required
-                  value={unidadInput}
-                  onChange={(e) => setUnidadInput(e.target.value)}
-                  placeholder="Ej. T1-101 o 101"
-                />
-              </label>
-              <label className="field">
-                <span>Cédula o NIT del propietario / arrendatario</span>
+                <span>Número de documento (Cédula o NIT)</span>
                 <input
                   required
                   value={documentoInput}
                   onChange={(e) => setDocumentoInput(e.target.value)}
                   placeholder="Sin puntos ni guiones"
+                  autoComplete="off"
                 />
               </label>
+
+              {mostrarFiltroUnidad && (
+                <label className="field">
+                  <span>Filtrar por unidad o apartamento (opcional)</span>
+                  <input
+                    value={unidadInput}
+                    onChange={(e) => setUnidadInput(e.target.value)}
+                    placeholder="Ej. Torre A 101 o 101"
+                  />
+                </label>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setMostrarFiltroUnidad((v) => !v)}
+                style={{
+                  alignSelf: 'flex-start',
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  color: '#0F766E',
+                  fontSize: 12.5,
+                  cursor: 'pointer',
+                  textDecoration: 'underline',
+                }}
+              >
+                {mostrarFiltroUnidad ? 'Ocultar filtro de apartamento' : 'Filtrar por apartamento específico'}
+              </button>
+
+              {companyInfo?.turnstileSiteKey && (
+                <div ref={turnstileRef} style={{ minHeight: 65 }} />
+              )}
+
               <Btn type="submit" variant="primary" disabled={buscando}>
-                {buscando ? 'Verificando…' : 'Consultar estado de cuenta'}
+                {buscando ? 'Verificando…' : 'Ingresar al portal'}
               </Btn>
             </form>
+          </section>
+        )}
+
+        {!token && matchedUnits.length > 1 && (
+          <section
+            style={{
+              background: '#FFFFFF',
+              border: '1px solid #E4E4E7',
+              borderRadius: 8,
+              padding: 20,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <div>
+                <h2 style={{ margin: '0 0 4px', fontSize: 18, letterSpacing: '-0.02em' }}>
+                  Selecciona el inmueble ({matchedUnits.length})
+                </h2>
+                <p style={{ margin: 0, fontSize: 13, color: '#52525B' }}>
+                  Encontramos {matchedUnits.length} unidades asociadas a tu documento.
+                </p>
+              </div>
+              <Btn
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setMatchedUnits([]);
+                  setDocumentoInput('');
+                  setUnidadInput('');
+                }}
+              >
+                Consultar otro documento
+              </Btn>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+              {matchedUnits.map((u) => (
+                <div
+                  key={u.unitId}
+                  style={{
+                    border: '1px solid #E4E4E7',
+                    borderRadius: 8,
+                    padding: 14,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                    background: '#F8F8F7',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <strong style={{ fontSize: 15 }}>
+                      {u.torre} {u.numero}
+                    </strong>
+                    <Badge tone={u.saldoActual <= 0 ? 'ok' : u.estadoCartera === 'EN_MORA' ? 'error' : 'warn'}>
+                      {u.saldoActual <= 0 ? 'Al día' : u.estadoCartera === 'EN_MORA' ? 'En mora' : 'Pendiente'}
+                    </Badge>
+                  </div>
+                  <div style={{ fontSize: 12.5, color: '#52525B' }}>
+                    {u.tipoUnidad} · Cuota {fmtMoney(u.cuotaMensual)}
+                  </div>
+                  <div className="mono" style={{ fontSize: 18, fontWeight: 600 }}>
+                    {fmtMoney(u.saldoActual)}
+                  </div>
+                  <Btn size="sm" variant="primary" onClick={() => seleccionarUnidad(u.token)}>
+                    Ver cuenta y pagar
+                  </Btn>
+                </div>
+              ))}
+            </div>
           </section>
         )}
 
@@ -373,6 +573,11 @@ export function PortalResidente({
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {matchedUnits.length > 1 && (
+                    <Btn size="sm" variant="ghost" onClick={volverASelector}>
+                      Cambiar unidad ({matchedUnits.length})
+                    </Btn>
+                  )}
                   <Btn size="sm" variant="outline" icon="download" onClick={descargarCuentaCobro}>
                     Descargar Cuenta de Cobro
                   </Btn>

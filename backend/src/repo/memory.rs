@@ -11,8 +11,9 @@ use crate::domain::{
     CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
     FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
     FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
-    PortalCheckoutResponse, PortalIntencionPagoItem, PortalLookupRequest, PortalLookupResponse,
-    PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
+    PortalCheckoutResponse, PortalCompanyPublicInfo, PortalIntencionPagoItem, PortalLookupRequest,
+    PortalLookupResponse, PortalLookupUnitMatch, PortalUnitLinkItem, PortalUnitStatement,
+    PostEntryResult, ThirdParty,
     UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
@@ -1943,16 +1944,43 @@ impl MemoryRepo {
         Ok(out)
     }
 
+    pub async fn portal_company_info(
+        &self,
+        slug: &str,
+    ) -> Result<PortalCompanyPublicInfo, ApiError> {
+        let g = self.inner.read().await;
+        let company = Self::find_company(&g.datos, slug.trim())?;
+        let turnstile_site_key = std::env::var("TURNSTILE_SITE_KEY")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        Ok(PortalCompanyPublicInfo {
+            company_id: company.id.clone(),
+            razon_social: company.razon_social.clone(),
+            nombre_corto: company.nombre_corto.clone(),
+            nit: company.nit.clone(),
+            ciudad: company.ciudad.clone(),
+            direccion: company.direccion.clone(),
+            periodo_actual: company.periodo_actual.clone(),
+            turnstile_site_key,
+            portal_logo_url: String::new(),
+            portal_cover_url: String::new(),
+            portal_color_primario: "#0F766E".into(),
+            portal_mensaje_bienvenida: String::new(),
+            portal_whatsapp_soporte: String::new(),
+        })
+    }
+
     pub async fn portal_lookup(
         &self,
         req: PortalLookupRequest,
     ) -> Result<PortalLookupResponse, ApiError> {
         let slug = req.company_slug.trim();
-        let unit_needle = normalize_unit_lookup(&req.unidad);
+        let unit_needle = normalize_unit_lookup(req.unidad.as_deref().unwrap_or(""));
         let doc_needle = extract_digits(&req.documento);
-        if unit_needle.is_empty() || doc_needle.len() < 5 {
+        if doc_needle.len() < 5 {
             return Err(ApiError::unprocessable(
-                "Ingresa la unidad y el documento de identidad del propietario o arrendatario.",
+                "Ingresa el número de cédula o NIT registrado (mínimo 5 dígitos).",
             ));
         }
 
@@ -1965,41 +1993,76 @@ impl MemoryRepo {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_ascii_uppercase());
 
-        for u in g.datos.units.iter().filter(|u| u.empresa_id == company.id) {
-            let full = normalize_unit_lookup(&format!("{}{}", u.torre, u.numero));
-            let num_only = normalize_unit_lookup(&u.numero);
-            if full != unit_needle && num_only != unit_needle {
-                continue;
-            }
-            if let Some(m4) = &mat_filter {
-                let mat = u.matricula.trim().to_ascii_uppercase();
-                if !mat.ends_with(m4) {
-                    continue;
+        let mut matching_units: Vec<&FrontendUnidad> = g
+            .datos
+            .units
+            .iter()
+            .filter(|u| u.empresa_id == company.id)
+            .filter(|u| {
+                if !unit_needle.is_empty() {
+                    let full = normalize_unit_lookup(&format!("{}{}", u.torre, u.numero));
+                    let num_only = normalize_unit_lookup(&u.numero);
+                    if full != unit_needle && num_only != unit_needle {
+                        return false;
+                    }
                 }
-            }
-            let prop_doc = g
+                if let Some(m4) = &mat_filter {
+                    let mat = u.matricula.trim().to_ascii_uppercase();
+                    if !mat.ends_with(m4) {
+                        return false;
+                    }
+                }
+                let prop_doc = g
+                    .datos
+                    .terceros
+                    .iter()
+                    .find(|t| t.id == u.propietario_id)
+                    .map(|t| extract_digits(&t.documento))
+                    .unwrap_or_default();
+                let arr_doc = u
+                    .arrendatario_id
+                    .as_ref()
+                    .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid))
+                    .map(|t| extract_digits(&t.documento))
+                    .unwrap_or_default();
+                prop_doc == doc_needle || (!arr_doc.is_empty() && arr_doc == doc_needle)
+            })
+            .collect();
+
+        matching_units.sort_by(|a, b| a.torre.cmp(&b.torre).then_with(|| a.numero.cmp(&b.numero)));
+
+        if matching_units.is_empty() {
+            return Err(ApiError::Unauthorized(
+                "No encontramos unidades registradas con ese número de documento.".into(),
+            ));
+        }
+
+        let mut units = Vec::with_capacity(matching_units.len());
+        for u in matching_units {
+            let prop_nombre = g
                 .datos
                 .terceros
                 .iter()
                 .find(|t| t.id == u.propietario_id)
-                .map(|t| extract_digits(&t.documento))
+                .map(|t| t.nombre.clone())
                 .unwrap_or_default();
-            let arr_doc = u
-                .arrendatario_id
-                .as_ref()
-                .and_then(|aid| g.datos.terceros.iter().find(|t| &t.id == aid))
-                .map(|t| extract_digits(&t.documento))
-                .unwrap_or_default();
-
-            if prop_doc == doc_needle || (!arr_doc.is_empty() && arr_doc == doc_needle) {
-                let token = auth::issue_portal_token(&company.id, &u.id)?;
-                return Ok(PortalLookupResponse { token });
-            }
+            let fig = compute_unit_portal_figures(company, u, &g.estado.comprobantes);
+            let token = auth::issue_portal_token(&company.id, &u.id)?;
+            units.push(PortalLookupUnitMatch {
+                token,
+                unit_id: u.id.clone(),
+                torre: u.torre.clone(),
+                numero: u.numero.clone(),
+                tipo_unidad: u.tipo.clone(),
+                propietario_nombre: prop_nombre,
+                saldo_actual: fig.saldo_actual,
+                cuota_mensual: fig.cuota_mensual,
+                estado_cartera: fig.estado_cartera,
+            });
         }
 
-        Err(ApiError::Unauthorized(
-            "No encontramos una unidad que coincida con esa torre/apto y documento.".into(),
-        ))
+        let token = units[0].token.clone();
+        Ok(PortalLookupResponse { token, units })
     }
 
     pub async fn portal_statement(

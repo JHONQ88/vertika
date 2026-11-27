@@ -556,19 +556,55 @@ pub struct PortalUnitLinkItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PortalCompanyPublicInfo {
+    pub company_id: String,
+    pub razon_social: String,
+    pub nombre_corto: String,
+    pub nit: String,
+    pub ciudad: String,
+    pub direccion: String,
+    pub periodo_actual: String,
+    pub turnstile_site_key: String,
+    pub portal_logo_url: String,
+    pub portal_cover_url: String,
+    pub portal_color_primario: String,
+    pub portal_mensaje_bienvenida: String,
+    pub portal_whatsapp_soporte: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PortalLookupRequest {
     #[serde(alias = "company_slug")]
     pub company_slug: String,
-    pub unidad: String,
+    #[serde(default)]
+    pub unidad: Option<String>,
     pub documento: String,
     #[serde(default, alias = "matricula_ultimos4")]
     pub matricula_ultimos4: Option<String>,
+    #[serde(default, alias = "turnstile_token")]
+    pub turnstile_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortalLookupUnitMatch {
+    pub token: String,
+    pub unit_id: String,
+    pub torre: String,
+    pub numero: String,
+    pub tipo_unidad: String,
+    pub propietario_nombre: String,
+    pub saldo_actual: Decimal,
+    pub cuota_mensual: Decimal,
+    pub estado_cartera: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PortalLookupResponse {
     pub token: String,
+    pub units: Vec<PortalLookupUnitMatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

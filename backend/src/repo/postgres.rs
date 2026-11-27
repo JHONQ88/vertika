@@ -11,8 +11,9 @@ use crate::domain::{
     CreateEntryRequest, CreatePreEntryRequest, CreatePreEntryResult, CreatePucAccountRequest,
     FrontendAuditoria, FrontendComprobante, FrontendCopropiedad, FrontendEstadoApp, FrontendLinea,
     FrontendPreAsiento, FrontendRubro, FrontendTercero, FrontendUnidad, LedgerAccount,
-    OpenNextPeriodResult, PortalCheckoutRequest, PortalCheckoutResponse, PortalIntencionPagoItem,
-    PortalLookupRequest, PortalLookupResponse, PortalUnitLinkItem, PortalUnitStatement,
+    OpenNextPeriodResult, PortalCheckoutRequest, PortalCheckoutResponse, PortalCompanyPublicInfo,
+    PortalIntencionPagoItem, PortalLookupRequest, PortalLookupResponse, PortalLookupUnitMatch,
+    PortalUnitLinkItem, PortalUnitStatement,
     PostEntryResult, ThirdParty, UpdateCompanySettingsRequest, UpsertThirdPartyRequest,
     UpsertUnitRequest, VoidEntryResult,
 };
@@ -3932,26 +3933,87 @@ impl PostgresRepo {
         Ok(out)
     }
 
+    pub async fn portal_company_info(
+        &self,
+        slug: &str,
+    ) -> Result<PortalCompanyPublicInfo, ApiError> {
+        let mut tx = self.db.pool.begin().await?;
+        let company = Self::resolve_company_tx(&mut tx, slug.trim()).await?;
+        let meta = sqlx::query(
+            "SELECT nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                    ciudad, direccion
+               FROM copropiedades
+              WHERE id = $1",
+        )
+        .bind(company.uuid)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+
+        let turnstile_site_key = std::env::var("TURNSTILE_SITE_KEY")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        Ok(PortalCompanyPublicInfo {
+            company_id: company.slug,
+            razon_social: meta.try_get("razon_social")?,
+            nombre_corto: meta.try_get("nombre_corto")?,
+            nit: meta.try_get("nit")?,
+            ciudad: meta.try_get("ciudad")?,
+            direccion: meta.try_get("direccion")?,
+            periodo_actual: company.periodo_actual,
+            turnstile_site_key,
+            portal_logo_url: String::new(),
+            portal_cover_url: String::new(),
+            portal_color_primario: "#0F766E".into(),
+            portal_mensaje_bienvenida: String::new(),
+            portal_whatsapp_soporte: String::new(),
+        })
+    }
+
     pub async fn portal_lookup(
         &self,
         req: PortalLookupRequest,
     ) -> Result<PortalLookupResponse, ApiError> {
         let slug = req.company_slug.trim();
-        let unit_needle = normalize_unit_lookup(&req.unidad);
+        let unit_needle = normalize_unit_lookup(req.unidad.as_deref().unwrap_or(""));
         let doc_needle = extract_digits(&req.documento);
-        if unit_needle.is_empty() || doc_needle.len() < 5 {
+        if doc_needle.len() < 5 {
             return Err(ApiError::unprocessable(
-                "Ingresa la unidad y el documento de identidad del propietario o arrendatario.",
+                "Ingresa el número de cédula o NIT registrado (mínimo 5 dígitos).",
             ));
         }
 
         let mut tx = self.db.pool.begin().await?;
         let company = Self::resolve_company_tx(&mut tx, slug).await?;
+        let comp_meta = sqlx::query(
+            "SELECT nit, razon_social, COALESCE(nombre_corto, razon_social) AS nombre_corto,
+                    sigla, ciudad, direccion, grupo_niif,
+                    COALESCE(porcentaje_fondo_imprevistos, 1.0) AS fondo_pct,
+                    tasa_mora_mensual, COALESCE(dia_corte_pronto_pago, 10::smallint) AS dia_corte,
+                    COALESCE(descuento_pronto_pago_pct, 0) AS desc_pct,
+                    COALESCE(llave_bre_b, '') AS llave_bre_b,
+                    presupuesto_anual, color
+               FROM copropiedades
+              WHERE id = $1",
+        )
+        .bind(company.uuid)
+        .fetch_one(&mut *tx)
+        .await?;
+
         let rows = sqlx::query(
             "SELECT COALESCE(u.clave_externa, u.id::text) AS ext_id,
                     u.grupo_torre, u.numero_unidad,
+                    COALESCE(u.tipo, 'APARTAMENTO') AS tipo,
+                    COALESCE(u.area, 0) AS area,
+                    u.coeficiente,
                     COALESCE(u.matricula_inmobiliaria, '') AS matricula,
+                    u.cartera_congelada,
+                    COALESCE(COALESCE(tp.clave_externa, tp.id::text), '') AS prop_ext,
+                    COALESCE(tp.nombre, '') AS prop_nombre,
                     COALESCE(tp.documento, '') AS prop_doc,
+                    COALESCE(ta.clave_externa, ta.id::text) AS arr_ext,
                     COALESCE(ta.documento, '') AS arr_doc
                FROM unidades_inmobiliarias u
                LEFT JOIN vinculos_unidad_tercero vp
@@ -3960,7 +4022,8 @@ impl PostgresRepo {
                LEFT JOIN vinculos_unidad_tercero va
                  ON va.unidad_id = u.id AND va.rol_en_unidad = 'ARRENDATARIO' AND va.activo = TRUE
                LEFT JOIN terceros ta ON ta.id = va.tercero_id
-              WHERE u.copropiedad_id = $1",
+              WHERE u.copropiedad_id = $1
+              ORDER BY u.grupo_torre, u.numero_unidad",
         )
         .bind(company.uuid)
         .fetch_all(&mut *tx)
@@ -3974,17 +4037,20 @@ impl PostgresRepo {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_ascii_uppercase());
 
+        let mut matched: Vec<(FrontendUnidad, String)> = Vec::new();
         for r in rows {
             let ext_id: String = r.try_get("ext_id")?;
             let torre: String = r.try_get("grupo_torre")?;
             let numero: String = r.try_get("numero_unidad")?;
-            let full = normalize_unit_lookup(&format!("{torre}{numero}"));
-            let num_only = normalize_unit_lookup(&numero);
-            if full != unit_needle && num_only != unit_needle {
-                continue;
+            if !unit_needle.is_empty() {
+                let full = normalize_unit_lookup(&format!("{torre}{numero}"));
+                let num_only = normalize_unit_lookup(&numero);
+                if full != unit_needle && num_only != unit_needle {
+                    continue;
+                }
             }
+            let mat: String = r.try_get("matricula")?;
             if let Some(m4) = &mat_filter {
-                let mat: String = r.try_get("matricula")?;
                 if !mat.trim().to_ascii_uppercase().ends_with(m4) {
                     continue;
                 }
@@ -3992,14 +4058,77 @@ impl PostgresRepo {
             let prop_doc = extract_digits(&r.try_get::<String, _>("prop_doc")?);
             let arr_doc = extract_digits(&r.try_get::<String, _>("arr_doc")?);
             if prop_doc == doc_needle || (!arr_doc.is_empty() && arr_doc == doc_needle) {
-                let token = auth::issue_portal_token(&company.slug, &ext_id)?;
-                return Ok(PortalLookupResponse { token });
+                matched.push((
+                    FrontendUnidad {
+                        id: ext_id,
+                        empresa_id: company.slug.clone(),
+                        torre,
+                        numero,
+                        tipo: r.try_get("tipo")?,
+                        area: r.try_get("area")?,
+                        coeficiente: r.try_get("coeficiente")?,
+                        matricula: mat,
+                        propietario_id: r.try_get("prop_ext")?,
+                        arrendatario_id: r.try_get("arr_ext")?,
+                        cartera_congelada: r.try_get("cartera_congelada")?,
+                    },
+                    r.try_get("prop_nombre")?,
+                ));
             }
         }
 
-        Err(ApiError::Unauthorized(
-            "No encontramos una unidad que coincida con esa torre/apto y documento.".into(),
-        ))
+        if matched.is_empty() {
+            return Err(ApiError::Unauthorized(
+                "No encontramos unidades registradas con ese número de documento.".into(),
+            ));
+        }
+
+        let saldos_map: HashMap<String, Decimal> =
+            serde_json::from_value(company.saldos_iniciales.clone()).unwrap_or_default();
+        let company_dto = FrontendCopropiedad {
+            id: company.slug.clone(),
+            nit: comp_meta.try_get("nit")?,
+            razon_social: comp_meta.try_get("razon_social")?,
+            nombre_corto: comp_meta.try_get("nombre_corto")?,
+            sigla: comp_meta.try_get("sigla")?,
+            ciudad: comp_meta.try_get("ciudad")?,
+            direccion: comp_meta.try_get("direccion")?,
+            grupo_niif: comp_meta.try_get("grupo_niif")?,
+            fondo_imprevistos_pct: comp_meta.try_get("fondo_pct")?,
+            tasa_mora_mensual: comp_meta.try_get("tasa_mora_mensual")?,
+            dia_corte_pronto_pago: comp_meta.try_get("dia_corte")?,
+            descuento_pronto_pago_pct: comp_meta.try_get("desc_pct")?,
+            llave_bre_b: comp_meta.try_get("llave_bre_b")?,
+            presupuesto_anual: comp_meta.try_get("presupuesto_anual")?,
+            periodo_actual: company.periodo_actual.clone(),
+            saldos_iniciales: saldos_map,
+            escala: company.escala,
+            color: comp_meta.try_get("color")?,
+            wompi_public_key: String::new(),
+            wompi_sandbox: true,
+            wompi_configurado: false,
+        };
+        let entries = self.load_entries_query(Some(company.uuid), None).await?;
+
+        let mut units = Vec::with_capacity(matched.len());
+        for (u, prop_nombre) in matched {
+            let fig = compute_unit_portal_figures(&company_dto, &u, &entries);
+            let token = auth::issue_portal_token(&company.slug, &u.id)?;
+            units.push(PortalLookupUnitMatch {
+                token,
+                unit_id: u.id,
+                torre: u.torre,
+                numero: u.numero,
+                tipo_unidad: u.tipo,
+                propietario_nombre: prop_nombre,
+                saldo_actual: fig.saldo_actual,
+                cuota_mensual: fig.cuota_mensual,
+                estado_cartera: fig.estado_cartera,
+            });
+        }
+
+        let token = units[0].token.clone();
+        Ok(PortalLookupResponse { token, units })
     }
 
     async fn load_portal_company_and_unit(

@@ -665,13 +665,46 @@ export async function fetchPortalLinksApi(companyId: string): Promise<PortalUnit
   return res.links ?? [];
 }
 
+export interface PortalCompanyPublicInfo {
+  companyId: string;
+  razonSocial: string;
+  nombreCorto: string;
+  nit: string;
+  ciudad: string;
+  direccion: string;
+  periodoActual: string;
+  turnstileSiteKey: string;
+  portalLogoUrl: string;
+  portalCoverUrl: string;
+  portalColorPrimario: string;
+  portalMensajeBienvenida: string;
+  portalWhatsappSoporte: string;
+}
+
+export interface PortalLookupUnitMatch {
+  token: string;
+  unitId: string;
+  torre: string;
+  numero: string;
+  tipoUnidad: string;
+  propietarioNombre: string;
+  saldoActual: number;
+  cuotaMensual: number;
+  estadoCartera: string;
+}
+
+export async function fetchPortalCompanyApi(slug: string): Promise<PortalCompanyPublicInfo> {
+  return request<PortalCompanyPublicInfo>(`/api/v1/portal/company/${encodeURIComponent(slug)}`);
+}
+
 export async function portalLookupApi(payload: {
   companySlug: string;
-  unidad: string;
+  unidad?: string;
   documento: string;
   matriculaUltimos4?: string;
-}): Promise<{ token: string }> {
-  return request<{ token: string }>('/api/v1/portal/lookup', {
+  turnstileToken?: string;
+}): Promise<{ token: string; units: PortalLookupUnitMatch[] }> {
+  return request<{ token: string; units: PortalLookupUnitMatch[] }>('/api/v1/portal/lookup', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

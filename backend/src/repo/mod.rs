@@ -13,8 +13,8 @@ use crate::domain::{
     CreatePucAccountRequest, FrontendAuditoria, FrontendComprobante, FrontendCopropiedad,
     FrontendEstadoApp, FrontendLinea, FrontendPreAsiento, FrontendRubro, FrontendTercero,
     FrontendUnidad, LedgerAccount, OpenNextPeriodResult, PortalCheckoutRequest,
-    PortalCheckoutResponse, PortalLookupRequest, PortalLookupResponse, PortalMovimientoItem,
-    PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
+    PortalCheckoutResponse, PortalCompanyPublicInfo, PortalLookupRequest, PortalLookupResponse,
+    PortalMovimientoItem, PortalUnitLinkItem, PortalUnitStatement, PostEntryResult, ThirdParty,
     UpdateCompanySettingsRequest, UpsertThirdPartyRequest, UpsertUnitRequest, VoidEntryResult,
 };
 use crate::error::ApiError;
@@ -379,6 +379,16 @@ impl Store {
         match self {
             Store::Memory(r) => r.list_portal_links(company_id).await,
             Store::Postgres(r) => r.list_portal_links(company_id).await,
+        }
+    }
+
+    pub async fn portal_company_info(
+        &self,
+        slug: &str,
+    ) -> Result<PortalCompanyPublicInfo, ApiError> {
+        match self {
+            Store::Memory(r) => r.portal_company_info(slug).await,
+            Store::Postgres(r) => r.portal_company_info(slug).await,
         }
     }
 

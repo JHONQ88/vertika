@@ -223,6 +223,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(company_portal_links),
         )
         // Portal público de propietarios/inquilinos y Webhook Wompi
+        .route("/api/v1/portal/company/:slug", get(portal_company_info))
         .route("/api/v1/portal/lookup", post(portal_lookup))
         .route("/api/v1/portal/unit/:token", get(portal_unit_statement))
         .route(
@@ -965,21 +966,71 @@ async fn company_portal_links(
     Ok(Json(json!({ "links": links })))
 }
 
+async fn portal_company_info(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let info = state.store.portal_company_info(&slug).await?;
+    Ok(Json(serde_json::to_value(info).unwrap_or_else(|_| json!({}))))
+}
+
+async fn verify_turnstile_if_configured(token_opt: Option<&str>) -> Result<(), ApiError> {
+    let secret = std::env::var("TURNSTILE_SECRET_KEY")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if secret.is_empty() {
+        return Ok(());
+    }
+    let token = token_opt.map(str::trim).unwrap_or("");
+    if token.is_empty() {
+        return Err(ApiError::Unauthorized(
+            "Completa la verificación de seguridad e intenta nuevamente.".into(),
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|_| ApiError::Internal("No fue posible inicializar el cliente HTTP.".into()))?;
+    let res = client
+        .post("https://challenges.cloudflare.com/turnstile/v0/siteverify")
+        .form(&[("secret", secret.as_str()), ("response", token)])
+        .send()
+        .await
+        .map_err(|_| ApiError::Unauthorized("No se pudo validar Turnstile; intenta nuevamente.".into()))?;
+    let body: Value = res
+        .json()
+        .await
+        .map_err(|_| ApiError::Unauthorized("Respuesta inválida al validar Turnstile.".into()))?;
+    if body.get("success").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(());
+    }
+    Err(ApiError::Unauthorized(
+        "Completa la verificación de seguridad e intenta nuevamente.".into(),
+    ))
+}
+
 async fn portal_lookup(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(req): Json<PortalLookupRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let rate_key_ident = format!("portal:{}:{}", req.company_slug.trim(), req.unidad.trim());
-    let (ip_key, email_key) = auth::login_rate_keys(&headers, &rate_key_ident);
-    state.login_limiter.check(&ip_key, &email_key)?;
+    let doc_digits = repo::extract_digits(&req.documento);
+    let (ip_key, doc_key) = auth::portal_rate_keys(&headers, &req.company_slug, &doc_digits);
+    state.login_limiter.check(&ip_key, &doc_key)?;
+
+    if let Err(e) = verify_turnstile_if_configured(req.turnstile_token.as_deref()).await {
+        state.login_limiter.record_failure(&ip_key, &doc_key);
+        return Err(e);
+    }
+
     match state.store.portal_lookup(req).await {
         Ok(res) => {
-            state.login_limiter.clear(&ip_key, &email_key);
+            state.login_limiter.clear(&ip_key, &doc_key);
             Ok(Json(serde_json::to_value(res).unwrap_or_else(|_| json!({}))))
         }
         Err(e) => {
-            state.login_limiter.record_failure(&ip_key, &email_key);
+            state.login_limiter.record_failure(&ip_key, &doc_key);
             Err(e)
         }
     }
@@ -3171,5 +3222,141 @@ mod tests {
         assert_eq!(replay_wh.status(), StatusCode::OK);
         let replay_body = json_body(replay_wh).await;
         assert_eq!(replay_body["idempotent"], true);
+    }
+
+    #[tokio::test]
+    async fn portal_lookup_document_only_multi_unit_and_rate_limit_work() {
+        let router = app();
+        let tok_contador = login_as(&router, "contador@vertika.co").await;
+
+        // 1. Fetch public company info
+        let info_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/portal/company/altavista")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(info_res.status(), StatusCode::OK);
+        let info_body = json_body(info_res).await;
+        assert_eq!(info_body["companyId"], "altavista");
+        assert!(!info_body["razonSocial"].as_str().unwrap_or("").is_empty());
+
+        // 2. Find Torre A 101 owner via bootstrap and attach a second unit to that same owner
+        let boot_res = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/bootstrap")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(boot_res.status(), StatusCode::OK);
+        let boot_body = json_body(boot_res).await;
+        let units = boot_body["datos"]["units"].as_array().unwrap();
+        let terceros = boot_body["datos"]["terceros"].as_array().unwrap();
+        let u101 = units
+            .iter()
+            .find(|u| u["empresaId"] == "altavista" && u["numero"] == "101")
+            .unwrap();
+        let prop_id = u101["propietarioId"].as_str().unwrap().to_string();
+        let prop_doc = terceros
+            .iter()
+            .find(|t| t["id"].as_str() == Some(prop_id.as_str()))
+            .unwrap()["documento"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let create_u2 = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/companies/altavista/units")
+                    .header("authorization", format!("Bearer {tok_contador}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "torre": "Torre Z",
+                            "numero": "909",
+                            "tipo": "PARQUEADERO",
+                            "area": 14,
+                            "coeficiente": 0.5,
+                            "matricula": "50N-999999",
+                            "propietarioId": prop_id
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_u2.status(), StatusCode::CREATED);
+
+        // 3. Lookup using ONLY documento (no unidad) -> returns both units with valid tokens
+        let lookup_res = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/portal/lookup")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "203.0.113.10")
+                    .body(Body::from(
+                        json!({
+                            "companySlug": "altavista",
+                            "documento": prop_doc
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_res.status(), StatusCode::OK);
+        let lookup_body = json_body(lookup_res).await;
+        let matched = lookup_body["units"].as_array().unwrap();
+        assert!(matched.len() >= 2);
+        for m in matched {
+            let tok = m["token"].as_str().unwrap();
+            let stmt_res = router
+                .clone()
+                .oneshot(
+                    Request::get(format!("/api/v1/portal/unit/{tok}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(stmt_res.status(), StatusCode::OK);
+        }
+
+        // 4. Rate limit by IP across different failed documents -> 429 after 5 failed attempts
+        let mut last_status = StatusCode::OK;
+        for idx in 0..7 {
+            let fail_res = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/portal/lookup")
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", "203.0.113.55")
+                        .body(Body::from(
+                            json!({
+                                "companySlug": "altavista",
+                                "documento": format!("9999000{idx}")
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            last_status = fail_res.status();
+            if idx < 5 {
+                assert_eq!(last_status, StatusCode::UNAUTHORIZED);
+            }
+        }
+        assert_eq!(last_status, StatusCode::TOO_MANY_REQUESTS);
     }
 }
